@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ADA Compliance Bot</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Accessibility Workflow for Teachers</p>
+          <h1>Upload a class document, review the fixes, and download the improved copy.</h1>
+          <p class="lede">
+            Designed for simple teacher workflows: upload notes, slides, handouts, and worksheets,
+            let the app fix the safest accessibility issues automatically, then review anything
+            that still needs human judgment before downloading the updated file.
+          </p>
+        </div>
+        <aside class="status-panel">
+          <h2>How it works</h2>
+          <ol class="plain-list">
+            <li>Upload a Word or PowerPoint file.</li>
+            <li>Review the audit summary and teacher review queue.</li>
+            <li>Download the remediated copy and accessibility report.</li>
+          </ol>
+          <p class="hint">Current best support: `.docx` and `.pptx`.</p>
+        </aside>
+      </section>
+
+      <section class="board single">
+        <article class="card">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">Upload</p>
+              <h2>Choose a classroom file</h2>
+            </div>
+          </div>
+          <form id="upload-form">
+            <label class="dropzone" for="document">
+              <input id="document" name="document" type="file" required />
+              <span>Select a file from your computer</span>
+              <small>Best today: `.docx` and `.pptx`. PDFs can be analyzed for limitations but are not auto-remediated yet.</small>
+            </label>
+            <button type="submit" class="button">Analyze and remediate</button>
+          </form>
+        </article>
+      </section>
+
+      <section id="results" class="card results hidden" aria-live="polite">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">Remediation Results</p>
+            <h2 id="result-title">Document analysis</h2>
+          </div>
+          <div class="result-actions">
+            <button id="download-file" class="button hidden" type="button">Download fixed file</button>
+            <button id="download-report" class="button secondary hidden" type="button">Download report</button>
+          </div>
+        </div>
+
+        <section class="audit-panel">
+          <div class="metric">
+            <span>Audit score</span>
+            <strong id="audit-score">0</strong>
+          </div>
+          <div class="metric">
+            <span>Auto-applied</span>
+            <strong id="audit-auto">0</strong>
+          </div>
+          <div class="metric">
+            <span>Needs review</span>
+            <strong id="audit-review">0</strong>
+          </div>
+          <div class="metric">
+            <span>Manual checks</span>
+            <strong id="audit-manual">0</strong>
+          </div>
+        </section>
+
+        <div class="result-grid">
+          <section>
+            <h3>Changes made</h3>
+            <ul id="changes"></ul>
+          </section>
+          <section>
+            <h3>Issues detected</h3>
+            <ul id="issues"></ul>
+          </section>
+        </div>
+
+        <section>
+          <h3>Current limits</h3>
+          <ul id="limitations"></ul>
+        </section>
+
+        <section>
+          <div class="card-heading">
+            <div>
+              <h3>Teacher review queue</h3>
+              <p class="hint">Approve, revise, or defer the items that still need human judgment.</p>
+            </div>
+            <button id="approve-safe" class="button secondary" type="button">Approve all suggested text</button>
+          </div>
+          <div id="review-items" class="review-list"></div>
+        </section>
+      </section>
+
+      <p id="status" class="status" aria-live="polite"></p>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

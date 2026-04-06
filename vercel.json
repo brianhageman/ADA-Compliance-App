@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "cleanUrls": true,
+  "functions": {
+    "api/**/*.py": {
+      "excludeFiles": "{app/static/**,render.yaml,Procfile,app/google_workspace.py,app/server.py,app/storage.py,data/**}"
+    }
+  }
+}

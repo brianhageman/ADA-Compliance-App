@@ -1,6 +1,9 @@
 .env
+.vercel
+.DS_Store
 data/
 app/uploads/
 app/outputs/
 app/__pycache__/
+api/__pycache__/
 *.pyc

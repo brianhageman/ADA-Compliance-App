@@ -99,9 +99,9 @@ def process_document(upload_path: Path, output_dir: Path) -> ProcessResult:
 
 def unsupported_result(upload_path: Path, ext: str) -> ProcessResult:
     limitations = [
-        "This MVP can auto-remediate PowerPoint (.pptx) and Word (.docx) files offline.",
+        "This web app can auto-remediate PowerPoint (.pptx) and Word (.docx) files after direct upload.",
         "PDF remediation usually requires structure tagging and reading-order tools that are not implemented yet.",
-        "Native Google Docs and Google Slides support would be handled through the Google Drive and Workspace APIs in a later phase.",
+        "Google login and Drive integration have been removed from this version so teachers can use a simple upload-and-download workflow.",
     ]
     issues = [
         Issue(

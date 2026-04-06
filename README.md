@@ -1,118 +1,74 @@
 # ADA Compliance Bot
 
-A phased, teacher-ready local web app for remediating common document accessibility issues.
+A Vercel-friendly web app for teachers who just want to upload a classroom document, review accessibility fixes, and download the improved copy.
 
-## Product shape
+## What this version does
 
-This version is designed around a practical school workflow:
+- Upload `.docx` and `.pptx` files directly from the browser
+- Apply the safest automatic fixes immediately
+- Show an audit summary with score, changes made, and remaining review items
+- Let a teacher approve, defer, or edit suggested accessibility text in the browser
+- Download the remediated file immediately
+- Download a plain-text accessibility report for documentation
 
-- Teachers can upload Word and PowerPoint files directly.
-- Teachers can sign in with Google and browse recent Drive files.
-- Google Docs and Google Slides are exported into Office formats first.
-- The app remediates the Office copy.
-- The remediated file is uploaded back to Drive as a new accessible copy.
-- The app creates a teacher review queue for issues that still need human judgment.
+## What it fixes today
 
-That gives us a real Google Workspace flow without pretending that fully automatic, perfect native-file remediation already exists.
-
-## What works now
-
-- Local upload remediation for `.docx` and `.pptx`
-- Google OAuth sign-in
-- Drive file listing for Docs, Slides, Office files, and PDFs
-- Export from Google Docs to `.docx`
-- Export from Google Slides to `.pptx`
-- Upload of the remediated accessible copy back to Drive
-- Audit summary with score, auto-applied fixes, and remaining manual checks
-- Teacher review queue with approve, defer, and edit-in-place suggestion review
-- Downloadable accessibility report for documentation
-- Automatic fixes for:
-  - missing image alt text in Word
-  - missing image alt text in PowerPoint
-  - generic Word hyperlink text such as `click here`
-- Audit checks for:
-  - possible heading-style paragraphs in Word
+- Missing image alt text in Word
+- Missing image alt text in PowerPoint
+- Generic Word hyperlink text such as `click here`
+- Audit flags for:
+  - likely heading-style paragraphs in Word
   - pasted raw URLs in Word
   - slides with no visible text that may need title or reading-order review
 
 ## Current limits
 
-- Alt text is placeholder-quality and should still be reviewed by a human
-- PDF remediation is not automated yet
-- Native Google Docs and Slides are not edited in place
-- Color contrast, heading structure, reading order, table headers, and language metadata are not fully remediated yet
-- SQLite-backed sessions are suitable for one deployed instance, but not yet for scaled multi-instance hosting
-- Teacher approvals are currently tracked in the browser and exported in the report, not written back into the document yet
+- Best support is still `.docx` and `.pptx`
+- PDFs are not auto-remediated yet
+- Alt text suggestions are placeholders and should be reviewed by a human
+- Color contrast, table headers, language metadata, and full reading-order repair are not fully automated yet
+- Review decisions currently live in the browser and the downloaded report, not inside the document itself
+- Large files may be constrained by browser upload size and Vercel function limits
 
-## Setup
+## Project structure
 
-1. Create a Google Cloud OAuth client for a web application.
-2. Add an authorized redirect URI matching your local app or hosted app, for example:
+- `index.html`, `app.js`, `styles.css`: static Vercel frontend
+- `api/remediate.py`: upload and remediation API
+- `api/healthz.py`: lightweight health check
+- `app/accessibility.py`: core document remediation and audit logic
+- `vercel.json`: Vercel configuration
 
-```text
-http://127.0.0.1:8000/auth/google/callback
-```
+## Local testing
 
-3. Copy `.env.example` to `.env` and fill in your values:
-
-```bash
-cp .env.example .env
-```
-
-4. Add your Google credentials to `.env`.
-5. Set `PUBLIC_BASE_URL` to the exact URL teachers will use.
-
-## Run
+You can still test the Python remediation logic locally with:
 
 ```bash
-cd /Users/bhageman/Documents/Arduino/ADA\ Comliance\ Bot
-python3 app/server.py
+cd /Users/bhageman/Documents/Arduino/ADA\ Compliance\ Bot
+python3 -m py_compile app/accessibility.py api/remediate.py api/healthz.py
 ```
 
-Then open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+## Deploy on Vercel
 
-## Deploy
+1. Push the repo to GitHub.
+2. In Vercel, create a new project from `brianhageman/ADA-Compliance-App`.
+3. Keep the default framework setting as `Other` if Vercel asks.
+4. Deploy.
+5. After deploy, test:
+   - `/`
+   - `/api/healthz`
+   - uploading a sample `.docx` or `.pptx`
 
-This project now includes:
+## Why this version fits Vercel better
 
-- [Procfile](/Users/bhageman/Documents/Arduino/ADA%20Comliance%20Bot/Procfile) for process-based deployment
-- [render.yaml](/Users/bhageman/Documents/Arduino/ADA%20Comliance%20Bot/render.yaml) for Render
-- SQLite-backed session and report storage in `data/ada_bot.db`
-- Production environment settings for host binding, cookie security, public URL, and upload size limits
+- No Google login flow
+- No server-side session persistence
+- No SQLite dependency
+- No saved output files between requests
+- The remediated file is returned directly to the browser for download
 
-### Render checklist
+## Recommended next steps
 
-1. Push the project to a Git repository.
-2. Create a new Render web service from that repository.
-3. Set these environment variables in Render:
-   - `GOOGLE_CLIENT_ID`
-   - `GOOGLE_CLIENT_SECRET`
-   - `PUBLIC_BASE_URL`
-   - `GOOGLE_REDIRECT_URI`
-   - `COOKIE_SECURE=true`
-4. In Google Cloud, add the hosted callback URL, for example:
-
-```text
-https://your-app-name.onrender.com/auth/google/callback
-```
-
-5. Deploy and verify [healthz](/Users/bhageman/Documents/Arduino/ADA%20Comliance%20Bot/app/server.py#L46) responds successfully.
-
-### Production notes
-
-- This is ready for a single-instance deployment.
-- Uploaded files and generated outputs still live on disk, so long-term hosting should add cleanup or object storage.
-- Review reports are persisted in SQLite, but teacher approvals are not yet written back into the document file itself.
-
-## Recommended next phases
-
-1. Add richer document auditing:
-   heading order, table headers, contrast checks, reading order, list semantics, and document language.
-2. Add AI-assisted suggestions:
-   better alt text, clearer link labels, and teacher approval before applying risky changes.
-3. Add Google-native writeback:
-   use Docs and Slides APIs for targeted native edits where that is safer than export-import.
-4. Add admin reporting:
-   school-wide dashboards, remediation queues, and exportable compliance summaries.
-5. Harden further for production:
-   object storage, scheduled cleanup, background jobs, admin controls, and multi-instance session storage.
+1. Improve alt text generation with safer content-aware suggestions.
+2. Add PDF auditing with clearer teacher guidance even before true PDF remediation exists.
+3. Add optional AI-assisted review text that teachers can accept or edit.
+4. Add stronger Office-format auditing for headings, contrast, tables, and lists.
