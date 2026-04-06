@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: ada-compliance-bot
+    runtime: python
+    plan: starter
+    buildCommand: mkdir -p data app/uploads app/outputs
+    startCommand: python3 app/server.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 10000
+      - key: COOKIE_SECURE
+        value: true
+      - key: MAX_UPLOAD_MB
+        value: 20

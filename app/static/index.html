@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ADA Compliance Bot</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Accessibility Workflow for Teachers</p>
+          <h1>Audit, remediate, and return more accessible classroom documents.</h1>
+          <p class="lede">
+            Use direct uploads for Word and PowerPoint, or connect Google Drive to export
+            Google Docs and Slides into Office formats, fix the most common accessibility issues,
+            and save the accessible copy back to Drive.
+          </p>
+          <div class="hero-actions">
+            <a id="google-login" class="button" href="/auth/google/start">Connect Google Workspace</a>
+            <button id="logout" class="button secondary hidden" type="button">Sign out</button>
+          </div>
+        </div>
+        <aside class="status-panel">
+          <h2>Workspace Status</h2>
+          <p id="session-status">Checking Google configuration...</p>
+          <div id="teacher-card" class="teacher hidden">
+            <img id="teacher-photo" alt="" />
+            <div>
+              <strong id="teacher-name"></strong>
+              <p id="teacher-email"></p>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="board">
+        <article class="card">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">Local Upload</p>
+              <h2>Upload a classroom file</h2>
+            </div>
+          </div>
+          <form id="upload-form">
+            <label class="dropzone" for="document">
+              <input id="document" name="document" type="file" required />
+              <span>Select a file from your computer</span>
+              <small>Best today: `.docx` and `.pptx`. PDF and Google-native remediation still needs review-heavy workflows.</small>
+            </label>
+            <button type="submit" class="button">Analyze and remediate</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">Google Drive</p>
+              <h2>Open Docs and Slides from Drive</h2>
+            </div>
+          </div>
+          <form id="search-form" class="search">
+            <input id="drive-query" type="search" placeholder="Search recent Docs, Slides, Office files, or PDFs" />
+            <button type="submit" class="button secondary">Search</button>
+          </form>
+          <p class="hint">
+            Native Google Docs and Slides are exported to Office format first, then the accessible copy is uploaded back to Drive.
+          </p>
+          <ul id="drive-files" class="file-list"></ul>
+        </article>
+      </section>
+
+      <section id="results" class="card results hidden" aria-live="polite">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">Remediation Results</p>
+            <h2 id="result-title">Document analysis</h2>
+          </div>
+          <div class="result-actions">
+            <a id="download-link" class="button secondary hidden" href="">Download copy</a>
+            <a id="drive-link" class="button hidden" href="" target="_blank" rel="noreferrer">Open in Drive</a>
+            <button id="download-report" class="button secondary hidden" type="button">Download report</button>
+          </div>
+        </div>
+
+        <section class="audit-panel">
+          <div class="metric">
+            <span>Audit score</span>
+            <strong id="audit-score">0</strong>
+          </div>
+          <div class="metric">
+            <span>Auto-applied</span>
+            <strong id="audit-auto">0</strong>
+          </div>
+          <div class="metric">
+            <span>Needs review</span>
+            <strong id="audit-review">0</strong>
+          </div>
+          <div class="metric">
+            <span>Manual checks</span>
+            <strong id="audit-manual">0</strong>
+          </div>
+        </section>
+
+        <div class="result-grid">
+          <section>
+            <h3>Changes made</h3>
+            <ul id="changes"></ul>
+          </section>
+          <section>
+            <h3>Issues detected</h3>
+            <ul id="issues"></ul>
+          </section>
+        </div>
+
+        <section>
+          <h3>Current limits</h3>
+          <ul id="limitations"></ul>
+        </section>
+
+        <section>
+          <div class="card-heading">
+            <div>
+              <h3>Teacher review queue</h3>
+              <p class="hint">Approve, revise, or defer the items that still need human judgment.</p>
+            </div>
+            <button id="approve-safe" class="button secondary" type="button">Approve all suggested text</button>
+          </div>
+          <div id="review-items" class="review-list"></div>
+        </section>
+      </section>
+
+      <p id="status" class="status" aria-live="polite"></p>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
