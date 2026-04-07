@@ -25,9 +25,11 @@ def describe_image_file(image_path: Path, *, fallback_name: str, index: int, con
     image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
     prompt = (
         "Write concise accessibility alt text for a classroom document image. "
-        "Describe what the image actually shows, including the main subject or takeaway. "
-        "If it is a chart, diagram, or table screenshot, summarize the structure and key point. "
-        "Do not use vague phrases like image, picture, or graphic unless needed for clarity. "
+        "State what is visually present, not just the topic. "
+        "If it is a chart, include the chart type and the main trend or comparison. "
+        "If it is a diagram, mention the main parts, labels, arrows, or flow. "
+        "If it is a worksheet image or illustration, name the visible subject and what students are meant to notice. "
+        "Do not use vague phrases like image, picture, graphic, educational illustration, or visual unless they are necessary for clarity. "
         "Return plain text only, ideally one sentence and under 160 characters."
     )
     if context_hint.strip():
@@ -52,7 +54,7 @@ def describe_image_file(image_path: Path, *, fallback_name: str, index: int, con
             }
         )
         text = extract_output_text(response)
-        return text.strip() or fallback
+        return finalize_alt_text(text, fallback, context_hint=context_hint)
     except Exception:
         return fallback
 
@@ -110,6 +112,52 @@ def call_openai(payload: dict) -> dict:
         raise RuntimeError(str(exc.reason)) from exc
 
 
+def finalize_alt_text(text: str, fallback: str, *, context_hint: str = "") -> str:
+    candidate = normalize_alt_text_response(text)
+    if not candidate:
+        return fallback
+    if looks_like_generic_alt_text(candidate):
+        context_label = cleaned_context_hint(context_hint)
+        if context_label:
+            return fallback_alt_text("", 0, context_hint=context_label)
+        return fallback
+    return candidate
+
+
+def normalize_alt_text_response(text: str) -> str:
+    candidate = re.sub(r"\s+", " ", (text or "").strip())
+    candidate = candidate.strip("\"'")
+    if len(candidate) > 180:
+        candidate = candidate[:177].rstrip(" ,;:-") + "..."
+    return candidate
+
+
+def looks_like_generic_alt_text(text: str) -> bool:
+    normalized = text.lower()
+    generic_starts = (
+        "image of ",
+        "picture of ",
+        "graphic of ",
+        "illustration of ",
+        "educational illustration",
+        "visual showing",
+        "illustration related to",
+    )
+    generic_phrases = (
+        "main subject and purpose",
+        "used in the document",
+        "depicts a concept",
+        "related to the topic",
+    )
+    if any(normalized.startswith(prefix) for prefix in generic_starts) and len(normalized.split()) <= 8:
+        return True
+    if any(phrase in normalized for phrase in generic_phrases):
+        return True
+    if len(normalized.split()) <= 4:
+        return True
+    return False
+
+
 def extract_output_text(response: dict) -> str:
     if isinstance(response.get("output_text"), str):
         return response["output_text"]
@@ -137,7 +185,7 @@ def mime_for_path(path: Path) -> str | None:
 def fallback_alt_text(name: str, index: int, context_hint: str = "") -> str:
     cleaned = cleaned_asset_name(name, index)
     context_label = cleaned_context_hint(context_hint)
-    subject = context_label or cleaned
+    subject = normalize_subject_phrase(context_label or cleaned)
     if subject:
         lowered = subject.lower()
         if any(keyword in lowered for keyword in ("chart", "graph", "plot")):
@@ -159,12 +207,29 @@ def fallback_table_summary(rows: list[list[str]], fallback_title: str) -> str:
     return f"{fallback_title}. Table with {row_count} rows and {col_count} columns."
 
 
+def normalize_subject_phrase(value: str) -> str:
+    subject = (value or "").strip()
+    subject = re.sub(r"^(this|the|an?)\s+", "", subject, flags=re.IGNORECASE)
+    return subject.strip(" .,:;-")
+
+
 def cleaned_context_hint(value: str) -> str:
     text = re.sub(r"\s+", " ", (value or "").strip())
     if not text:
         return ""
-    words = text.split()
-    limited = " ".join(words[:10]).strip(" .,:;-")
+    sentences = [segment.strip(" .,:;-") for segment in re.split(r"[.!?]", text) if segment.strip()]
+    if not sentences:
+        return ""
+    preferred = next(
+        (
+            sentence
+            for sentence in sentences
+            if any(keyword in sentence.lower() for keyword in ("chart", "graph", "diagram", "cycle", "timeline", "map", "process", "model"))
+        ),
+        sentences[0],
+    )
+    words = preferred.split()
+    limited = " ".join(words[:12]).strip(" .,:;-")
     if len(limited) < 4:
         return ""
     return limited

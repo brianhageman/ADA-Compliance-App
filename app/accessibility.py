@@ -724,18 +724,37 @@ def slide_context_hint(root: ET.Element) -> str:
         for node in root.findall(".//a:t", NS)
         if (node.text or "").strip()
     ]
-    return " ".join(texts[:12])
+    return ". ".join(texts[:12])
 
 
 def docx_image_context(root: ET.Element, target: ET.Element) -> str:
     paragraph = find_ancestor_tag(root, target, f"{{{NS['w']}}}p")
+    body = root.find(".//w:body", NS)
+    if paragraph is not None and body is not None:
+        siblings = list(body)
+        if paragraph in siblings:
+            index = siblings.index(paragraph)
+            nearby: list[str] = []
+            for offset in (-2, -1, 1, 2, 3):
+                neighbor_index = index + offset
+                if neighbor_index < 0 or neighbor_index >= len(siblings):
+                    continue
+                neighbor = siblings[neighbor_index]
+                if neighbor.tag != f"{{{NS['w']}}}p":
+                    continue
+                neighbor_text = paragraph_visible_text(neighbor)
+                if neighbor_text:
+                    nearby.append(neighbor_text)
+            if nearby:
+                return ". ".join(nearby[:4])
+
     if paragraph is not None:
         paragraph_text = paragraph_visible_text(paragraph)
         if paragraph_text:
             return paragraph_text
     paragraphs = [paragraph_visible_text(p) for p in root.findall(".//w:p", NS)]
-    context = [text for text in paragraphs if text][:3]
-    return " ".join(context)
+    context = [text for text in paragraphs if text][:4]
+    return ". ".join(context)
 
 
 def build_heading_prompt(visible_text: str, bold_heading: dict | None) -> str:
