@@ -1049,16 +1049,17 @@ def paragraph_visible_text(paragraph: ET.Element) -> str:
     return "".join(texts).strip()
 
 
-def detect_bold_heading(paragraph: ET.Element) -> dict | None:
-    runs = paragraph.findall("./w:r", NS)
-    if not runs:
-        return None
-
+def paragraph_text_runs(paragraph: ET.Element) -> list[tuple[ET.Element, str, bool]]:
     text_runs: list[tuple[ET.Element, str, bool]] = []
-    for run in runs:
+    for run in paragraph.findall(".//w:r", NS):
         text_value = run_visible_text(run)
         if text_value.strip():
             text_runs.append((run, text_value, run_is_bold(run)))
+    return text_runs
+
+
+def detect_bold_heading(paragraph: ET.Element) -> dict | None:
+    text_runs = paragraph_text_runs(paragraph)
     if not text_runs:
         return None
 
@@ -1121,6 +1122,8 @@ def split_bold_lead_paragraph(root: ET.Element, paragraph: ET.Element, style_val
     heading_text = heading_signal["text"]
 
     runs = paragraph.findall("./w:r", NS)
+    if not runs:
+        return False
     lead_runs: list[ET.Element] = []
     for run in runs:
         text = run_visible_text(run)
@@ -1133,6 +1136,8 @@ def split_bold_lead_paragraph(root: ET.Element, paragraph: ET.Element, style_val
             continue
         break
 
+    if not lead_runs:
+        return False
     remaining_text = paragraph_visible_text(paragraph)
     if remaining_text == heading_text:
         return False
