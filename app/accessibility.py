@@ -714,7 +714,8 @@ def image_review_preview(name: str | None, existing_alt_text: str | None, contex
 
 
 def build_image_secondary_text(suggested_text: str, debug_reason: str) -> str:
-    return f"Suggested alt text: {suggested_text}\n{debug_reason}"
+    del debug_reason
+    return f"Suggested alt text: {suggested_text}"
 
 
 def table_preview_text(rows: list[list[str]]) -> str:
