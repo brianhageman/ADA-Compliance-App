@@ -75,7 +75,8 @@ def describe_image_result(image_path: Path, *, fallback_name: str, index: int, c
         final_text, debug_reason = finalize_alt_text(text, fallback, context_hint=context_hint)
         return ImageDescriptionResult(final_text, debug_reason)
     except Exception as exc:
-        return ImageDescriptionResult(fallback, f"Fallback used: vision request failed ({type(exc).__name__})")
+        detail = summarize_error(exc)
+        return ImageDescriptionResult(fallback, f"Fallback used: vision request failed ({detail})")
 
 
 def describe_table_rows(rows: list[list[str]], *, fallback_title: str) -> str:
@@ -129,6 +130,15 @@ def call_openai(payload: dict) -> dict:
         raise RuntimeError(exc.read().decode("utf-8", errors="ignore") or str(exc)) from exc
     except URLError as exc:
         raise RuntimeError(str(exc.reason)) from exc
+
+
+def summarize_error(exc: Exception) -> str:
+    raw = re.sub(r"\s+", " ", str(exc).strip())
+    if not raw:
+        return type(exc).__name__
+    if len(raw) > 120:
+        raw = raw[:117].rstrip(" ,;:-") + "..."
+    return raw
 
 
 def finalize_alt_text(text: str, fallback: str, *, context_hint: str = "") -> tuple[str, str]:
