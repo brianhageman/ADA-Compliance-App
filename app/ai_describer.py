@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -25,6 +26,7 @@ def describe_image_file(image_path: Path, *, fallback_name: str, index: int) -> 
         "Write concise accessibility alt text for a classroom document image. "
         "Describe what the image actually shows, including the main subject or takeaway. "
         "If it is a chart, diagram, or table screenshot, summarize the structure and key point. "
+        "Do not use vague phrases like image, picture, or graphic unless needed for clarity. "
         "Return plain text only, ideally one sentence and under 160 characters."
     )
     try:
@@ -130,9 +132,17 @@ def mime_for_path(path: Path) -> str | None:
 
 
 def fallback_alt_text(name: str, index: int) -> str:
-    raw_name = (name or f"image {index}").strip()
-    words = raw_name.replace("_", " ").replace("-", " ")
-    return f"Describe this image: {words}".strip()
+    cleaned = cleaned_asset_name(name, index)
+    if cleaned:
+        lowered = cleaned.lower()
+        if any(keyword in lowered for keyword in ("chart", "graph", "plot")):
+            return f"Chart about {cleaned}. Review to confirm the key trend or comparison."
+        if any(keyword in lowered for keyword in ("diagram", "cycle", "process", "model")):
+            return f"Diagram about {cleaned}. Review to confirm the main relationship or process shown."
+        if any(keyword in lowered for keyword in ("table", "data")):
+            return f"Visual related to {cleaned}. Review to confirm the key information shown."
+        return f"Visual related to {cleaned}. Review to describe the main content more specifically."
+    return "Classroom image or graphic. Review to describe the main subject and purpose."
 
 
 def fallback_table_summary(rows: list[list[str]], fallback_title: str) -> str:
@@ -142,3 +152,32 @@ def fallback_table_summary(rows: list[list[str]], fallback_title: str) -> str:
     if header:
         return f"Table with {row_count} rows and {col_count} columns. Header examples: {header}."
     return f"{fallback_title}. Table with {row_count} rows and {col_count} columns."
+
+
+def cleaned_asset_name(name: str, index: int) -> str:
+    raw_name = (name or f"image {index}").strip()
+    stem = Path(raw_name).stem
+    normalized = re.sub(r"[_-]+", " ", stem)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" ._")
+    if not normalized:
+        return ""
+    if is_generic_asset_name(normalized):
+        return ""
+    return normalized
+
+
+def is_generic_asset_name(value: str) -> bool:
+    compact = re.sub(r"[^a-z0-9]+", "", value.lower())
+    generic_patterns = (
+        r"image\d*",
+        r"img\d*",
+        r"picture\d*",
+        r"photo\d*",
+        r"graphic\d*",
+        r"diagram\d*",
+        r"chart\d*",
+        r"figure\d*",
+        r"scan\d*",
+        r"screenshot\d*",
+    )
+    return any(re.fullmatch(pattern, compact) for pattern in generic_patterns)

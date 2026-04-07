@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 import shutil
@@ -10,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
-from app.ai_describer import describe_image_file, describe_table_rows
+from app.ai_describer import describe_image_file, describe_table_rows, fallback_alt_text as generated_fallback_alt_text
 
 
 NS = {
@@ -371,10 +372,7 @@ def load_relationship_targets(rels_path: Path) -> dict[str, str]:
 
 
 def build_alt_text(name: str | None, index: int) -> str:
-    raw_name = (name or f"image {index}").strip()
-    words = re.sub(r"[_-]+", " ", raw_name)
-    words = re.sub(r"\s+", " ", words)
-    return f"Describe this image: {words}".strip()
+    return generated_fallback_alt_text(name or f"image {index}", index)
 
 
 def normalize_link_text(text: str) -> str:
@@ -403,24 +401,31 @@ def audit_docx_structure(root: ET.Element, result: ProcessResult) -> None:
     heading_candidates = 0
     raw_url_count = 0
     for index, paragraph in enumerate(paragraphs, start=1):
-        texts = [node.text or "" for node in paragraph.findall(".//w:t", NS)]
-        visible_text = "".join(texts).strip()
+        visible_text = paragraph_visible_text(paragraph)
         if not visible_text:
             continue
 
         style = paragraph.find(".//w:pStyle", NS)
         style_val = style.attrib.get(f"{{{NS['w']}}}val", "") if style is not None else ""
-        if looks_like_heading_candidate(visible_text, style_val):
+        bold_lead_text = extract_bold_heading_text(paragraph)
+        heading_prompt_text = bold_lead_text or visible_text
+        if bold_lead_text or looks_like_heading_candidate(visible_text, style_val):
             heading_candidates += 1
             if heading_candidates <= 3:
+                prompt = (
+                    f"This paragraph begins with bold text that looks like a section header. "
+                    f"If approved, the bold lead-in will be split into its own heading. Lead-in text: '{bold_lead_text}'."
+                    if bold_lead_text
+                    else f"This paragraph looks like a heading visually. Verify that a true heading style is applied. Paragraph text: '{visible_text}'."
+                )
                 result.review_items.append(
                     ReviewItem(
                         review_id=f"docx-heading-{index}",
                         category="heading_structure",
                         title="Check heading structure",
-                        prompt=f"This paragraph looks like a heading visually. Verify that a true heading style is applied. Paragraph text: '{visible_text}'.",
+                        prompt=prompt,
                         location=f"paragraph {index}",
-                        suggested_value=suggest_heading_level(visible_text, heading_candidates),
+                        suggested_value=suggest_heading_level(heading_prompt_text, heading_candidates),
                         confidence="medium",
                         priority="medium",
                     )
@@ -512,8 +517,12 @@ def apply_docx_review_actions(root: ET.Element, result: ProcessResult, review_it
             if paragraph_index is None or paragraph_index < 1 or paragraph_index > len(paragraphs):
                 continue
             style_value = normalize_heading_style(suggested_value)
-            apply_paragraph_style(paragraphs[paragraph_index - 1], style_value)
-            result.changes.append(f"Applied {style_value} to paragraph {paragraph_index} from approved review.")
+            paragraph = paragraphs[paragraph_index - 1]
+            if split_bold_lead_paragraph(root, paragraph, style_value):
+                result.changes.append(f"Split paragraph {paragraph_index} into a heading and body paragraph using {style_value}.")
+            else:
+                apply_paragraph_style(paragraph, style_value)
+                result.changes.append(f"Applied {style_value} to paragraph {paragraph_index} from approved review.")
             continue
 
         if review_id.startswith("docx-alt-"):
@@ -667,6 +676,123 @@ def set_table_description(table: ET.Element, description: str) -> None:
     if table_description is None:
         table_description = ET.SubElement(table_props, f"{{{NS['w']}}}tblDescription")
     table_description.set(f"{{{NS['w']}}}val", description)
+
+
+def paragraph_visible_text(paragraph: ET.Element) -> str:
+    texts = [node.text or "" for node in paragraph.findall(".//w:t", NS)]
+    return "".join(texts).strip()
+
+
+def extract_bold_heading_text(paragraph: ET.Element) -> str:
+    runs = paragraph.findall("./w:r", NS)
+    if not runs:
+        return ""
+
+    leading_runs: list[ET.Element] = []
+    saw_visible_text = False
+    saw_non_bold_after = False
+
+    for run in runs:
+        text = run_visible_text(run)
+        if not text.strip():
+            if leading_runs:
+                leading_runs.append(run)
+            continue
+        saw_visible_text = True
+        if run_is_bold(run) and not saw_non_bold_after:
+            leading_runs.append(run)
+            continue
+        if leading_runs:
+            saw_non_bold_after = True
+        break
+
+    if not saw_visible_text or not leading_runs or not saw_non_bold_after:
+        return ""
+
+    heading_text = "".join(run_visible_text(run) for run in leading_runs).strip()
+    if not heading_text:
+        return ""
+    word_count = len(heading_text.replace(":", " ").split())
+    if word_count == 0 or word_count > 8 or len(heading_text) > 80:
+        return ""
+    return heading_text
+
+
+def run_visible_text(run: ET.Element) -> str:
+    return "".join(node.text or "" for node in run.findall(".//w:t", NS))
+
+
+def run_is_bold(run: ET.Element) -> bool:
+    bold = run.find(".//w:b", NS)
+    if bold is None:
+        return False
+    val = bold.attrib.get(f"{{{NS['w']}}}val", "1").lower()
+    return val not in {"0", "false", "off"}
+
+
+def split_bold_lead_paragraph(root: ET.Element, paragraph: ET.Element, style_value: str) -> bool:
+    heading_text = extract_bold_heading_text(paragraph)
+    if not heading_text:
+        return False
+
+    runs = paragraph.findall("./w:r", NS)
+    lead_runs: list[ET.Element] = []
+    for run in runs:
+        text = run_visible_text(run)
+        if not text.strip():
+            if lead_runs:
+                lead_runs.append(run)
+            continue
+        if run_is_bold(run):
+            lead_runs.append(run)
+            continue
+        break
+
+    remaining_text = paragraph_visible_text(paragraph)
+    if remaining_text == heading_text:
+        return False
+
+    new_paragraph = ET.Element(f"{{{NS['w']}}}p")
+    apply_paragraph_style(new_paragraph, style_value)
+    for run in lead_runs:
+        new_paragraph.append(copy.deepcopy(run))
+
+    parent, child_index = find_parent_with_index(root, paragraph)
+    if parent is None or child_index is None:
+        return False
+
+    for run in lead_runs:
+        if run in list(paragraph):
+            paragraph.remove(run)
+    trim_leading_whitespace_runs(paragraph)
+    if not paragraph_visible_text(paragraph):
+        return False
+
+    parent.insert(child_index, new_paragraph)
+    return True
+
+
+def trim_leading_whitespace_runs(paragraph: ET.Element) -> None:
+    for run in paragraph.findall("./w:r", NS):
+        text_nodes = run.findall(".//w:t", NS)
+        if not text_nodes:
+            continue
+        for node in text_nodes:
+            if node.text:
+                node.text = node.text.lstrip()
+                if node.text:
+                    return
+        if run_visible_text(run).strip():
+            return
+
+
+def find_parent_with_index(root: ET.Element, child: ET.Element) -> tuple[ET.Element | None, int | None]:
+    for parent in root.iter():
+        children = list(parent)
+        for index, candidate in enumerate(children):
+            if candidate is child:
+                return parent, index
+    return None, None
 
 
 def looks_like_heading_candidate(visible_text: str, style_val: str) -> bool:
