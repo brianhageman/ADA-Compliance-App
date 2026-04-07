@@ -32,6 +32,16 @@ GENERIC_LINK_TEXT = {
     "read more",
 }
 
+COLOR_CONTRAST_THRESHOLD = 4.5
+WORD_THEME_COLOR_MAP = {
+    "text1": "dk1",
+    "background1": "lt1",
+    "text2": "dk2",
+    "background2": "lt2",
+    "hyperlink": "hlink",
+    "followedhyperlink": "folHlink",
+}
+
 
 @dataclass
 class Issue:
@@ -146,13 +156,14 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
         filename=upload_path.name,
         limitations=[
             "AI-assisted image and table descriptions should still be reviewed by a human before sharing with students.",
-            "Color contrast and heading structure are not fully remediated in this MVP.",
+            "Color contrast is audited for explicit text colors, but theme-based and complex layered backgrounds may still need manual review.",
         ],
     )
     work_dir = Path(tempfile.mkdtemp(prefix="docx_fix_"))
     try:
         unzip_to(upload_path, work_dir)
         rel_targets = load_relationship_targets(work_dir / "word" / "_rels" / "document.xml.rels")
+        theme_colors = load_office_theme_colors(work_dir / "word" / "theme" / "theme1.xml")
         media_files = sorted((work_dir / "word" / "media").glob("*"))
         document_path = work_dir / "word" / "document.xml"
         tree = ET.parse(document_path)
@@ -270,6 +281,7 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
                 )
             )
 
+        audit_docx_contrast(root, result, theme_colors)
         audit_docx_structure(root, result)
         apply_docx_review_actions(root, result, review_items)
 
@@ -290,7 +302,7 @@ def remediate_pptx(upload_path: Path, output_dir: Path, review_items: list[dict]
         filename=upload_path.name,
         limitations=[
             "AI-assisted image descriptions should still be reviewed by a human before distribution.",
-            "Color contrast, reading order, and slide title enforcement are planned next steps.",
+            "Color contrast is audited for explicit text colors, but theme-based, gradient, and image backgrounds may still need manual review.",
         ],
     )
     work_dir = Path(tempfile.mkdtemp(prefix="pptx_fix_"))
@@ -298,6 +310,7 @@ def remediate_pptx(upload_path: Path, output_dir: Path, review_items: list[dict]
         unzip_to(upload_path, work_dir)
         slide_paths = sorted((work_dir / "ppt" / "slides").glob("slide*.xml"))
         media_files = sorted((work_dir / "ppt" / "media").glob("*"))
+        theme_colors = load_office_theme_colors(work_dir / "ppt" / "theme" / "theme1.xml")
         total_updates = 0
         slide_docs: dict[int, tuple[Path, ET.ElementTree, ET.Element]] = {}
         media_index = 0
@@ -354,6 +367,7 @@ def remediate_pptx(upload_path: Path, output_dir: Path, review_items: list[dict]
                         secondary_text=build_image_secondary_text(generated, image_result.debug_reason if image_result else "Fallback used: no extracted media match"),
                     )
                 )
+            audit_pptx_contrast(root, slide_idx, result, theme_colors)
             audit_slide_structure(root, slide_idx, result)
 
         apply_pptx_review_actions(slide_docs, result, review_items)
@@ -397,6 +411,248 @@ def load_relationship_targets(rels_path: Path) -> dict[str, str]:
 
 def build_alt_text(name: str | None, index: int) -> str:
     return generated_fallback_alt_text(name or f"image {index}", index)
+
+
+def load_office_theme_colors(theme_path: Path) -> dict[str, str]:
+    if not theme_path.exists():
+        return {}
+    try:
+        root = ET.parse(theme_path).getroot()
+    except ET.ParseError:
+        return {}
+    scheme = root.find(".//a:clrScheme", NS)
+    if scheme is None:
+        return {}
+    colors: dict[str, str] = {}
+    for child in list(scheme):
+        key = child.tag.split("}")[-1]
+        colors[key] = resolve_theme_color_element(child)
+    return {key: value for key, value in colors.items() if value}
+
+
+def resolve_theme_color_element(node: ET.Element) -> str:
+    srgb = node.find("a:srgbClr", NS)
+    if srgb is not None:
+        return normalize_hex_color(srgb.attrib.get("val", ""))
+    system = node.find("a:sysClr", NS)
+    if system is not None:
+        return normalize_hex_color(system.attrib.get("lastClr", ""))
+    return ""
+
+
+def normalize_hex_color(value: str) -> str:
+    raw = (value or "").strip().lstrip("#")
+    if len(raw) == 3:
+        raw = "".join(ch * 2 for ch in raw)
+    if len(raw) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in raw):
+        return ""
+    return raw.upper()
+
+
+def hex_to_rgb(value: str) -> tuple[int, int, int] | None:
+    normalized = normalize_hex_color(value)
+    if not normalized:
+        return None
+    return tuple(int(normalized[index:index + 2], 16) for index in (0, 2, 4))
+
+
+def relative_luminance(rgb: tuple[int, int, int]) -> float:
+    def channel(value: int) -> float:
+        normalized = value / 255
+        if normalized <= 0.03928:
+            return normalized / 12.92
+        return ((normalized + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = rgb
+    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+
+
+def contrast_ratio(foreground: str, background: str) -> float | None:
+    fg_rgb = hex_to_rgb(foreground)
+    bg_rgb = hex_to_rgb(background)
+    if fg_rgb is None or bg_rgb is None:
+        return None
+    fg_luminance = relative_luminance(fg_rgb)
+    bg_luminance = relative_luminance(bg_rgb)
+    lighter = max(fg_luminance, bg_luminance)
+    darker = min(fg_luminance, bg_luminance)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def describe_contrast(foreground: str, background: str, ratio: float) -> str:
+    return f"{foreground} on {background} is {ratio:.2f}:1"
+
+
+def resolve_word_theme_color(value: str, theme_colors: dict[str, str]) -> str:
+    key = WORD_THEME_COLOR_MAP.get((value or "").strip().lower(), (value or "").strip())
+    return normalize_hex_color(theme_colors.get(key, ""))
+
+
+def resolve_word_color_node(color_node: ET.Element | None, theme_colors: dict[str, str]) -> str:
+    if color_node is None:
+        return ""
+    value = normalize_hex_color(color_node.attrib.get(f"{{{NS['w']}}}val", ""))
+    if value:
+        return value
+    theme_value = color_node.attrib.get(f"{{{NS['w']}}}themeColor", "")
+    if theme_value:
+        return resolve_word_theme_color(theme_value, theme_colors)
+    return ""
+
+
+def resolve_word_shading(shading_node: ET.Element | None, theme_colors: dict[str, str]) -> str:
+    if shading_node is None:
+        return ""
+    fill = normalize_hex_color(shading_node.attrib.get(f"{{{NS['w']}}}fill", ""))
+    if fill:
+        return fill
+    theme_fill = shading_node.attrib.get(f"{{{NS['w']}}}themeFill", "")
+    if theme_fill:
+        return resolve_word_theme_color(theme_fill, theme_colors)
+    return ""
+
+
+def word_run_foreground(run: ET.Element, theme_colors: dict[str, str]) -> str:
+    color_node = run.find("./w:rPr/w:color", NS)
+    return resolve_word_color_node(color_node, theme_colors)
+
+
+def word_run_background(root: ET.Element, paragraph: ET.Element, run: ET.Element, theme_colors: dict[str, str]) -> str:
+    run_shading = resolve_word_shading(run.find("./w:rPr/w:shd", NS), theme_colors)
+    if run_shading:
+        return run_shading
+    paragraph_shading = resolve_word_shading(paragraph.find("./w:pPr/w:shd", NS), theme_colors)
+    if paragraph_shading:
+        return paragraph_shading
+    cell = find_ancestor_tag(root, paragraph, f"{{{NS['w']}}}tc")
+    if cell is not None:
+        cell_shading = resolve_word_shading(cell.find("./w:tcPr/w:shd", NS), theme_colors)
+        if cell_shading:
+            return cell_shading
+    return "FFFFFF"
+
+
+def resolve_drawing_color(fill_node: ET.Element | None, theme_colors: dict[str, str]) -> str:
+    if fill_node is None:
+        return ""
+    srgb = fill_node.find("a:srgbClr", NS)
+    if srgb is not None:
+        return normalize_hex_color(srgb.attrib.get("val", ""))
+    system = fill_node.find("a:sysClr", NS)
+    if system is not None:
+        return normalize_hex_color(system.attrib.get("lastClr", ""))
+    scheme = fill_node.find("a:schemeClr", NS)
+    if scheme is not None:
+        return normalize_hex_color(theme_colors.get(scheme.attrib.get("val", ""), ""))
+    return ""
+
+
+def slide_background_color(root: ET.Element, theme_colors: dict[str, str]) -> str:
+    background = resolve_drawing_color(root.find("./p:cSld/p:bg/p:bgPr/a:solidFill", NS), theme_colors)
+    if background:
+        return background
+    return normalize_hex_color(theme_colors.get("lt1", "")) or "FFFFFF"
+
+
+def shape_background_color(root: ET.Element, shape: ET.Element | None, theme_colors: dict[str, str]) -> str:
+    if shape is not None:
+        fill = resolve_drawing_color(shape.find("./p:spPr/a:solidFill", NS), theme_colors)
+        if fill:
+            return fill
+    return slide_background_color(root, theme_colors)
+
+
+def audit_docx_contrast(root: ET.Element, result: ProcessResult, theme_colors: dict[str, str]) -> None:
+    findings = 0
+    for index, paragraph in enumerate(root.findall(".//w:p", NS), start=1):
+        visible_text = paragraph_visible_text(paragraph)
+        if not visible_text:
+            continue
+        worst: tuple[float, str, str, str] | None = None
+        for run in paragraph.findall("./w:r", NS):
+            sample = run_visible_text(run).strip()
+            if not sample:
+                continue
+            foreground = word_run_foreground(run, theme_colors)
+            if not foreground:
+                continue
+            background = word_run_background(root, paragraph, run, theme_colors)
+            ratio = contrast_ratio(foreground, background)
+            if ratio is None or ratio >= COLOR_CONTRAST_THRESHOLD:
+                continue
+            if worst is None or ratio < worst[0]:
+                worst = (ratio, foreground, background, sample)
+        if worst is None:
+            continue
+        findings += 1
+        ratio, foreground, background, sample = worst
+        result.review_items.append(
+            ReviewItem(
+                review_id=f"docx-contrast-{index}",
+                category="color_contrast",
+                title="Check color contrast",
+                prompt="This text appears too low-contrast for normal-size body text. Adjust the text or background colors so the contrast ratio is at least 4.5:1.",
+                location=f"paragraph {index}",
+                suggested_value=f"Increase contrast. Current pair: {describe_contrast(foreground, background, ratio)}",
+                confidence="medium",
+                priority="high",
+                preview_text=visible_text,
+                secondary_text=f"Low-contrast text sample: {sample}",
+            )
+        )
+        result.issues.append(
+            Issue(
+                severity="warning",
+                category="color_contrast",
+                message=f"Paragraph {index} may fail contrast checks: {describe_contrast(foreground, background, ratio)}.",
+                location=f"paragraph {index}",
+            )
+        )
+    if findings:
+        result.changes.append(f"Flagged {findings} possible low-contrast text areas for teacher review.")
+
+
+def audit_pptx_contrast(root: ET.Element, slide_idx: int, result: ProcessResult, theme_colors: dict[str, str]) -> None:
+    findings = 0
+    for run_index, run in enumerate(root.findall(".//a:r", NS), start=1):
+        text_node = run.find("a:t", NS)
+        sample = (text_node.text or "").strip() if text_node is not None else ""
+        if not sample:
+            continue
+        foreground = resolve_drawing_color(run.find("./a:rPr/a:solidFill", NS), theme_colors)
+        if not foreground:
+            continue
+        shape = find_ancestor_tag(root, run, f"{{{NS['p']}}}sp")
+        background = shape_background_color(root, shape, theme_colors)
+        ratio = contrast_ratio(foreground, background)
+        if ratio is None or ratio >= COLOR_CONTRAST_THRESHOLD:
+            continue
+        findings += 1
+        location = f"slide {slide_idx}, text run {run_index}"
+        result.review_items.append(
+            ReviewItem(
+                review_id=f"pptx-contrast-{slide_idx}-{run_index}",
+                category="color_contrast",
+                title="Check slide color contrast",
+                prompt="This slide text appears too low-contrast for normal-size body text. Adjust the text or background colors so the contrast ratio is at least 4.5:1.",
+                location=location,
+                suggested_value=f"Increase contrast. Current pair: {describe_contrast(foreground, background, ratio)}",
+                confidence="medium",
+                priority="high",
+                preview_text=sample,
+                secondary_text=f"Detected on slide {slide_idx}: {describe_contrast(foreground, background, ratio)}",
+            )
+        )
+        result.issues.append(
+            Issue(
+                severity="warning",
+                category="color_contrast",
+                message=f"Slide {slide_idx} may fail contrast checks: {describe_contrast(foreground, background, ratio)}.",
+                location=location,
+            )
+        )
+    if findings:
+        result.changes.append(f"Flagged {findings} possible low-contrast text areas on slide {slide_idx} for teacher review.")
 
 
 def normalize_link_text(text: str) -> str:
