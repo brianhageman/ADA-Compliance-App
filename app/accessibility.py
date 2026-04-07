@@ -33,6 +33,8 @@ GENERIC_LINK_TEXT = {
 }
 
 COLOR_CONTRAST_THRESHOLD = 4.5
+PREFERRED_DARK_SCHEMES = ("dk1", "tx1", "text1")
+PREFERRED_LIGHT_SCHEMES = ("lt1", "bg1", "background1")
 WORD_THEME_COLOR_MAP = {
     "text1": "dk1",
     "background1": "lt1",
@@ -479,14 +481,38 @@ def contrast_ratio(foreground: str, background: str) -> float | None:
     return (lighter + 0.05) / (darker + 0.05)
 
 
-def preferred_text_color(background: str) -> tuple[str, float] | tuple[None, None]:
+def preferred_text_color(background: str, theme_colors: dict[str, str] | None = None) -> tuple[str, float, str | None, str | None] | tuple[None, None, None, None]:
+    theme_colors = theme_colors or {}
     black_ratio = contrast_ratio("000000", background)
     white_ratio = contrast_ratio("FFFFFF", background)
     if black_ratio is None or white_ratio is None:
-        return None, None
-    if black_ratio >= white_ratio:
-        return "000000", black_ratio
-    return "FFFFFF", white_ratio
+        return None, None, None, None
+
+    best_raw = ("000000", black_ratio, None, None) if black_ratio >= white_ratio else ("FFFFFF", white_ratio, None, None)
+
+    candidates: list[tuple[str, float, str | None, str | None]] = [best_raw]
+    for scheme_name in PREFERRED_DARK_SCHEMES:
+        scheme_value = normalize_hex_color(theme_colors.get(scheme_name, ""))
+        if scheme_value:
+            ratio = contrast_ratio(scheme_value, background)
+            if ratio is not None:
+                candidates.append((scheme_value, ratio, scheme_name, word_theme_color_name(scheme_name)))
+    for scheme_name in PREFERRED_LIGHT_SCHEMES:
+        scheme_value = normalize_hex_color(theme_colors.get(scheme_name, ""))
+        if scheme_value:
+            ratio = contrast_ratio(scheme_value, background)
+            if ratio is not None:
+                candidates.append((scheme_value, ratio, scheme_name, word_theme_color_name(scheme_name)))
+
+    passing = [candidate for candidate in candidates if candidate[1] >= COLOR_CONTRAST_THRESHOLD]
+    if not passing:
+        return best_raw
+    theme_passing = [candidate for candidate in passing if candidate[2] is not None]
+    if theme_passing:
+        theme_passing.sort(key=lambda item: item[1], reverse=True)
+        return theme_passing[0]
+    passing.sort(key=lambda item: item[1], reverse=True)
+    return passing[0]
 
 
 def describe_contrast(foreground: str, background: str, ratio: float) -> str:
@@ -496,6 +522,14 @@ def describe_contrast(foreground: str, background: str, ratio: float) -> str:
 def resolve_word_theme_color(value: str, theme_colors: dict[str, str]) -> str:
     key = WORD_THEME_COLOR_MAP.get((value or "").strip().lower(), (value or "").strip())
     return normalize_hex_color(theme_colors.get(key, ""))
+
+
+def word_theme_color_name(scheme_name: str | None) -> str | None:
+    if scheme_name in {"dk1", "tx1", "text1"}:
+        return "text1"
+    if scheme_name in {"lt1", "bg1", "background1"}:
+        return "background1"
+    return None
 
 
 def resolve_word_color_node(color_node: ET.Element | None, theme_colors: dict[str, str]) -> str:
@@ -527,7 +561,7 @@ def word_run_foreground(run: ET.Element, theme_colors: dict[str, str]) -> str:
     return resolve_word_color_node(color_node, theme_colors)
 
 
-def set_word_run_foreground(run: ET.Element, color_value: str) -> None:
+def set_word_run_foreground(run: ET.Element, color_value: str, theme_name: str | None = None) -> None:
     r_pr = run.find("w:rPr", NS)
     if r_pr is None:
         r_pr = ET.Element(f"{{{NS['w']}}}rPr")
@@ -537,6 +571,8 @@ def set_word_run_foreground(run: ET.Element, color_value: str) -> None:
         color = ET.SubElement(r_pr, f"{{{NS['w']}}}color")
     color.attrib.clear()
     color.set(f"{{{NS['w']}}}val", color_value)
+    if theme_name:
+        color.set(f"{{{NS['w']}}}themeColor", theme_name)
 
 
 def word_run_background(root: ET.Element, paragraph: ET.Element, run: ET.Element, theme_colors: dict[str, str]) -> str:
@@ -584,7 +620,7 @@ def shape_background_color(root: ET.Element, shape: ET.Element | None, theme_col
     return slide_background_color(root, theme_colors)
 
 
-def set_pptx_run_foreground(run: ET.Element, color_value: str) -> None:
+def set_pptx_run_foreground(run: ET.Element, color_value: str, scheme_name: str | None = None) -> None:
     r_pr = run.find("a:rPr", NS)
     if r_pr is None:
         r_pr = ET.Element(f"{{{NS['a']}}}rPr")
@@ -592,7 +628,12 @@ def set_pptx_run_foreground(run: ET.Element, color_value: str) -> None:
     for fill in list(r_pr.findall("a:solidFill", NS)):
         r_pr.remove(fill)
     solid_fill = ET.SubElement(r_pr, f"{{{NS['a']}}}solidFill")
-    ET.SubElement(solid_fill, f"{{{NS['a']}}}srgbClr", val=color_value)
+    if scheme_name in {"dk1", "tx1", "text1"}:
+        ET.SubElement(solid_fill, f"{{{NS['a']}}}schemeClr", val="tx1")
+    elif scheme_name in {"lt1", "bg1", "background1"}:
+        ET.SubElement(solid_fill, f"{{{NS['a']}}}schemeClr", val="bg1")
+    else:
+        ET.SubElement(solid_fill, f"{{{NS['a']}}}srgbClr", val=color_value)
 
 
 def audit_docx_contrast(root: ET.Element, result: ProcessResult, theme_colors: dict[str, str]) -> None:
@@ -614,9 +655,9 @@ def audit_docx_contrast(root: ET.Element, result: ProcessResult, theme_colors: d
             ratio = contrast_ratio(foreground, background)
             if ratio is None or ratio >= COLOR_CONTRAST_THRESHOLD:
                 continue
-            replacement, replacement_ratio = preferred_text_color(background)
+            replacement, replacement_ratio, scheme_name, theme_name = preferred_text_color(background, theme_colors)
             if replacement and replacement_ratio and replacement_ratio >= COLOR_CONTRAST_THRESHOLD:
-                set_word_run_foreground(run, replacement)
+                set_word_run_foreground(run, replacement, theme_name=theme_name)
                 fixes += 1
                 auto_fixed = True
                 result.issues.append(
