@@ -16,6 +16,7 @@ const downloadReportButton = document.getElementById("download-report");
 const downloadFileButton = document.getElementById("download-file");
 
 let currentResult = null;
+let currentUploadFile = null;
 let reviewState = [];
 
 function setStatus(message) {
@@ -25,7 +26,7 @@ function setStatus(message) {
 function renderList(target, items, formatter) {
   target.innerHTML = "";
   const values = items && items.length ? items : ["None in this category."];
-  values.forEach((item) => {
+  values.forEach(function (item) {
     const li = document.createElement("li");
     li.textContent = formatter ? formatter(item) : item;
     target.appendChild(li);
@@ -33,10 +34,10 @@ function renderList(target, items, formatter) {
 }
 
 function updateAuditSummary(summary) {
-  auditScoreEl.textContent = summary?.score ?? 0;
-  auditAutoEl.textContent = summary?.auto_applied ?? 0;
-  auditReviewEl.textContent = summary?.needs_review ?? 0;
-  auditManualEl.textContent = summary?.manual_checks ?? 0;
+  auditScoreEl.textContent = summary && summary.score ? summary.score : 0;
+  auditAutoEl.textContent = summary && summary.auto_applied ? summary.auto_applied : 0;
+  auditReviewEl.textContent = summary && summary.needs_review ? summary.needs_review : 0;
+  auditManualEl.textContent = summary && summary.manual_checks ? summary.manual_checks : 0;
 }
 
 function statusLabel(status) {
@@ -45,36 +46,51 @@ function statusLabel(status) {
   return "Needs review";
 }
 
+function mergeReviewState(incomingItems) {
+  const priorById = new Map(reviewState.map(function (item) {
+    return [item.review_id, item];
+  }));
+  return (incomingItems || []).map(function (item) {
+    const prior = priorById.get(item.review_id);
+    if (prior) {
+      return Object.assign({}, item, {
+        status: prior.status,
+        suggested_value: prior.suggested_value,
+      });
+    }
+    return Object.assign({}, item);
+  });
+}
+
 function renderReviewItems(items) {
   reviewItemsEl.innerHTML = "";
-  if (!items.length) {
+  if (items.length === 0) {
     reviewItemsEl.innerHTML = '<p class="hint">No teacher-review items remain for this document.</p>';
     return;
   }
 
-  items.forEach((item, index) => {
+  items.forEach(function (item, index) {
     const card = document.createElement("article");
     card.className = "review-card";
 
     const meta = document.createElement("div");
     meta.className = "review-meta";
-    meta.innerHTML = `
-      <span class="pill">${item.category}</span>
-      <span class="pill muted">${item.priority} priority</span>
-      <span class="pill muted">${item.confidence} confidence</span>
-      <span class="pill status-${item.status}">${statusLabel(item.status)}</span>
-    `;
+    meta.innerHTML =
+      '<span class="pill">' + item.category + '</span>' +
+      '<span class="pill muted">' + item.priority + ' priority</span>' +
+      '<span class="pill muted">' + item.confidence + ' confidence</span>' +
+      '<span class="pill status-' + item.status + '">' + statusLabel(item.status) + '</span>';
 
     const title = document.createElement("h4");
     title.textContent = item.title;
 
     const prompt = document.createElement("p");
-    prompt.textContent = `${item.prompt} [${item.location}]`;
+    prompt.textContent = item.prompt + ' [' + item.location + ']';
 
     const textarea = document.createElement("textarea");
     textarea.value = item.suggested_value || "";
     textarea.rows = 3;
-    textarea.addEventListener("input", (event) => {
+    textarea.addEventListener("input", function (event) {
       reviewState[index].suggested_value = event.target.value;
     });
 
@@ -85,7 +101,7 @@ function renderReviewItems(items) {
     approve.type = "button";
     approve.className = "button secondary";
     approve.textContent = "Approve";
-    approve.addEventListener("click", () => {
+    approve.addEventListener("click", function () {
       reviewState[index].status = "approved";
       renderReviewItems(reviewState);
       syncSummaryFromReviewState();
@@ -95,7 +111,7 @@ function renderReviewItems(items) {
     defer.type = "button";
     defer.className = "button ghost";
     defer.textContent = "Defer";
-    defer.addEventListener("click", () => {
+    defer.addEventListener("click", function () {
       reviewState[index].status = "deferred";
       renderReviewItems(reviewState);
       syncSummaryFromReviewState();
@@ -105,7 +121,7 @@ function renderReviewItems(items) {
     reset.type = "button";
     reset.className = "button ghost";
     reset.textContent = "Reset";
-    reset.addEventListener("click", () => {
+    reset.addEventListener("click", function () {
       reviewState[index].status = "needs_review";
       renderReviewItems(reviewState);
       syncSummaryFromReviewState();
@@ -118,26 +134,29 @@ function renderReviewItems(items) {
 }
 
 function syncSummaryFromReviewState() {
-  const needsReview = reviewState.filter((item) => item.status === "needs_review").length;
-  const summary = {
-    ...(currentResult?.auditSummary || {}),
+  const needsReview = reviewState.filter(function (item) {
+    return item.status === "needs_review";
+  }).length;
+  const summary = Object.assign({}, currentResult ? currentResult.auditSummary : {}, {
     needs_review: reviewState.length,
     manual_checks: needsReview,
-  };
+  });
   currentResult.auditSummary = summary;
   updateAuditSummary(summary);
 }
 
 function showResults(payload) {
   currentResult = payload;
-  reviewState = (payload.reviewItems || []).map((item) => ({ ...item }));
+  reviewState = mergeReviewState(payload.reviewItems || []);
 
-  resultTitle.textContent = `${payload.filename} (${payload.documentType})`;
+  resultTitle.textContent = payload.filename + ' (' + payload.documentType + ')';
   renderList(changesEl, payload.changes);
-  renderList(issuesEl, payload.issues, (issue) => `${issue.category}: ${issue.message} [${issue.location}]`);
+  renderList(issuesEl, payload.issues, function (issue) {
+    return issue.category + ': ' + issue.message + ' [' + issue.location + ']';
+  });
   renderList(limitationsEl, payload.limitations);
   renderReviewItems(reviewState);
-  updateAuditSummary(payload.auditSummary);
+  syncSummaryFromReviewState();
 
   if (payload.outputFileBase64) {
     downloadFileButton.classList.remove("hidden");
@@ -150,36 +169,63 @@ function showResults(payload) {
 }
 
 function buildReportText() {
-  if (!currentResult) return "";
+  if (currentResult === null) return "";
+
   const lines = [
     "ADA Compliance Bot Report",
     "",
-    `Document: ${currentResult.filename}`,
-    `Type: ${currentResult.documentType}`,
-    `Audit score: ${currentResult.auditSummary?.score ?? 0}`,
-    `Auto-applied fixes: ${currentResult.auditSummary?.auto_applied ?? 0}`,
-    `Review items: ${reviewState.length}`,
-    `Manual checks remaining: ${reviewState.filter((item) => item.status === "needs_review").length}`,
+    "Document: " + currentResult.filename,
+    "Type: " + currentResult.documentType,
+    "Audit score: " + (currentResult.auditSummary ? currentResult.auditSummary.score : 0),
+    "Auto-applied fixes: " + (currentResult.auditSummary ? currentResult.auditSummary.auto_applied : 0),
+    "Review items: " + reviewState.length,
+    "Manual checks remaining: " + reviewState.filter(function (item) {
+      return item.status === "needs_review";
+    }).length,
     "",
     "Applied changes:",
-    ...(currentResult.changes?.length ? currentResult.changes.map((entry) => `- ${entry}`) : ["- None"]),
-    "",
-    "Issues found:",
-    ...(currentResult.issues?.length
-      ? currentResult.issues.map((issue) => `- ${issue.category}: ${issue.message} [${issue.location}]`)
-      : ["- None"]),
-    "",
-    "Teacher review queue:",
-    ...(reviewState.length
-      ? reviewState.map(
-          (item) =>
-            `- ${item.title} | ${item.status} | ${item.location} | Suggested value: ${item.suggested_value || "n/a"}`
-        )
-      : ["- None"]),
-    "",
-    "Current limitations:",
-    ...(currentResult.limitations?.length ? currentResult.limitations.map((item) => `- ${item}`) : ["- None"]),
   ];
+
+  if (currentResult.changes && currentResult.changes.length) {
+    currentResult.changes.forEach(function (entry) {
+      lines.push("- " + entry);
+    });
+  } else {
+    lines.push("- None");
+  }
+
+  lines.push("");
+  lines.push("Issues found:");
+  if (currentResult.issues && currentResult.issues.length) {
+    currentResult.issues.forEach(function (issue) {
+      lines.push("- " + issue.category + ": " + issue.message + " [" + issue.location + "]");
+    });
+  } else {
+    lines.push("- None");
+  }
+
+  lines.push("");
+  lines.push("Teacher review queue:");
+  if (reviewState.length) {
+    reviewState.forEach(function (item) {
+      lines.push(
+        "- " + item.title + " | " + item.status + " | " + item.location + " | Suggested value: " + (item.suggested_value || "n/a")
+      );
+    });
+  } else {
+    lines.push("- None");
+  }
+
+  lines.push("");
+  lines.push("Current limitations:");
+  if (currentResult.limitations && currentResult.limitations.length) {
+    currentResult.limitations.forEach(function (item) {
+      lines.push("- " + item);
+    });
+  } else {
+    lines.push("- None");
+  }
+
   return lines.join("\n");
 }
 
@@ -193,23 +239,54 @@ function downloadBlob(filename, mimeType, contentBytes) {
   URL.revokeObjectURL(url);
 }
 
-function downloadFixedFile() {
-  const bytes = Uint8Array.from(atob(currentResult.outputFileBase64), (char) => char.charCodeAt(0));
+function hasApprovedServerChanges() {
+  return reviewState.some(function (item) {
+    return item.status === "approved" && item.review_id.indexOf("docx-") === 0;
+  });
+}
+
+async function regenerateWithApprovedChanges() {
+  if (currentUploadFile === null) {
+    return currentResult;
+  }
+
+  const formData = new FormData();
+  formData.append("document", currentUploadFile);
+  formData.append("reviewState", JSON.stringify(reviewState));
+
+  setStatus("Applying approved review changes to the document...");
+  const payload = await fetchJson("/api/remediate", {
+    method: "POST",
+    body: formData,
+  });
+  showResults(payload);
+  return payload;
+}
+
+async function downloadFixedFile() {
+  let payload = currentResult;
+  if (hasApprovedServerChanges()) {
+    payload = await regenerateWithApprovedChanges();
+  }
+  const bytes = Uint8Array.from(atob(payload.outputFileBase64), function (char) {
+    return char.charCodeAt(0);
+  });
   downloadBlob(
-    currentResult.outputFileName || "ada-remediated-file",
-    currentResult.outputMimeType || "application/octet-stream",
+    payload.outputFileName || "ada-remediated-file",
+    payload.outputMimeType || "application/octet-stream",
     bytes
   );
 }
 
 function downloadReport() {
   const bytes = new TextEncoder().encode(buildReportText());
-  const name = `${(currentResult?.filename || "accessibility-report").replace(/\.[^.]+$/, "")}-accessibility-report.txt`;
+  const baseName = (currentResult && currentResult.filename ? currentResult.filename : "accessibility-report").replace(/\.[^.]+$/, "");
+  const name = baseName + "-accessibility-report.txt";
   downloadBlob(name, "text/plain;charset=utf-8", bytes);
 }
 
-async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+async function fetchJson(url, options) {
+  const response = await fetch(url, options || {});
   const payload = await response.json();
   if (!response.ok) {
     throw new Error(payload.error || "Request failed");
@@ -217,7 +294,7 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
-uploadForm.addEventListener("submit", async (event) => {
+uploadForm.addEventListener("submit", async function (event) {
   event.preventDefault();
   const file = fileInput.files[0];
   if (!file) {
@@ -225,9 +302,12 @@ uploadForm.addEventListener("submit", async (event) => {
     return;
   }
 
+  currentUploadFile = file;
+  reviewState = [];
+
   const formData = new FormData();
   formData.append("document", file);
-  setStatus(`Uploading ${file.name}...`);
+  setStatus("Uploading " + file.name + "...");
 
   try {
     const payload = await fetchJson("/api/remediate", {
@@ -245,21 +325,25 @@ uploadForm.addEventListener("submit", async (event) => {
   }
 });
 
-approveSafeButton.addEventListener("click", () => {
-  reviewState = reviewState.map((item) =>
-    item.suggested_value ? { ...item, status: "approved" } : item
-  );
+approveSafeButton.addEventListener("click", function () {
+  reviewState = reviewState.map(function (item) {
+    return item.suggested_value ? Object.assign({}, item, { status: "approved" }) : item;
+  });
   renderReviewItems(reviewState);
   syncSummaryFromReviewState();
   setStatus("Suggested review text marked as approved.");
 });
 
-downloadReportButton.addEventListener("click", () => {
+downloadReportButton.addEventListener("click", function () {
   downloadReport();
   setStatus("Accessibility report downloaded.");
 });
 
-downloadFileButton.addEventListener("click", () => {
-  downloadFixedFile();
-  setStatus("Remediated file downloaded.");
+downloadFileButton.addEventListener("click", async function () {
+  try {
+    await downloadFixedFile();
+    setStatus("Remediated file downloaded.");
+  } catch (error) {
+    setStatus(error.message);
+  }
 });

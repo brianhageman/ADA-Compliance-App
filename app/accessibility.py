@@ -86,10 +86,10 @@ class ProcessResult:
         }
 
 
-def process_document(upload_path: Path, output_dir: Path) -> ProcessResult:
+def process_document(upload_path: Path, output_dir: Path, review_items: list[dict] | None = None) -> ProcessResult:
     ext = upload_path.suffix.lower()
     if ext == ".docx":
-        return remediate_docx(upload_path, output_dir)
+        return remediate_docx(upload_path, output_dir, review_items=review_items)
     if ext == ".pptx":
         return remediate_pptx(upload_path, output_dir)
     if ext in {".pdf", ".doc", ".ppt", ".xls", ".xlsx", ".txt"}:
@@ -107,7 +107,7 @@ def unsupported_result(upload_path: Path, ext: str) -> ProcessResult:
         Issue(
             severity="info",
             category="support",
-            message=f"{ext or 'This file type'} is not editable in the current offline MVP.",
+            message=f"{ext or 'This file type'} is not editable in the current web app.",
             location="document",
         )
     ]
@@ -134,7 +134,7 @@ def unsupported_result(upload_path: Path, ext: str) -> ProcessResult:
     return result
 
 
-def remediate_docx(upload_path: Path, output_dir: Path) -> ProcessResult:
+def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict] | None = None) -> ProcessResult:
     result = ProcessResult(
         supported=True,
         document_type="docx",
@@ -192,13 +192,7 @@ def remediate_docx(upload_path: Path, output_dir: Path) -> ProcessResult:
             new_text = describe_target(target)
             if new_text == visible_text:
                 continue
-            replaced = False
-            for node in text_nodes:
-                if not replaced:
-                    node.text = new_text
-                    replaced = True
-                else:
-                    node.text = ""
+            replace_text_nodes(text_nodes, new_text)
             result.issues.append(
                 Issue(
                     severity="warning",
@@ -222,6 +216,7 @@ def remediate_docx(upload_path: Path, output_dir: Path) -> ProcessResult:
             )
 
         audit_docx_structure(root, result)
+        apply_docx_review_actions(root, result, review_items)
 
         tree.write(document_path, encoding="utf-8", xml_declaration=True)
         output_path = output_dir / f"{upload_path.stem}.ada-remediated.docx"
@@ -370,9 +365,9 @@ def audit_docx_structure(root: ET.Element, result: ProcessResult) -> None:
                         review_id=f"docx-heading-{index}",
                         category="heading_structure",
                         title="Check heading structure",
-                        prompt="This paragraph looks like a heading visually. Verify that a true heading style is applied.",
+                        prompt=f"This paragraph looks like a heading visually. Verify that a true heading style is applied. Paragraph text: '{visible_text}'.",
                         location=f"paragraph {index}",
-                        suggested_value=visible_text,
+                        suggested_value="Heading 2",
                         confidence="medium",
                         priority="medium",
                     )
@@ -440,6 +435,87 @@ def audit_slide_structure(root: ET.Element, slide_idx: int, result: ProcessResul
                 location=f"slide {slide_idx}",
             )
         )
+
+
+def apply_docx_review_actions(root: ET.Element, result: ProcessResult, review_items: list[dict] | None) -> None:
+    if not review_items:
+        return
+
+    approved = [item for item in review_items if item.get("status") == "approved"]
+    if not approved:
+        return
+
+    paragraphs = root.findall(".//w:p", NS)
+    doc_prs = root.findall(".//wp:docPr", NS)
+    hyperlinks = root.findall(".//w:hyperlink", NS)
+
+    for item in approved:
+        review_id = item.get("review_id", "")
+        suggested_value = (item.get("suggested_value") or "").strip()
+
+        if review_id.startswith("docx-heading-"):
+            paragraph_index = parse_review_index(review_id)
+            if paragraph_index is None or paragraph_index < 1 or paragraph_index > len(paragraphs):
+                continue
+            style_value = normalize_heading_style(suggested_value)
+            apply_paragraph_style(paragraphs[paragraph_index - 1], style_value)
+            result.changes.append(f"Applied {style_value} to paragraph {paragraph_index} from approved review.")
+
+        if review_id.startswith("docx-alt-"):
+            image_index = parse_review_index(review_id)
+            if image_index is None or image_index < 1 or image_index > len(doc_prs):
+                continue
+            alt_text = suggested_value or doc_prs[image_index - 1].attrib.get("descr", "")
+            if not alt_text:
+                continue
+            doc_prs[image_index - 1].set("descr", alt_text)
+            doc_prs[image_index - 1].set("title", alt_text)
+            result.changes.append(f"Applied approved alt text for image {image_index}.")
+
+        if review_id.startswith("docx-link-"):
+            link_index = parse_review_index(review_id)
+            if link_index is None or link_index < 1 or link_index > len(hyperlinks):
+                continue
+            if not suggested_value:
+                continue
+            text_nodes = hyperlinks[link_index - 1].findall(".//w:t", NS)
+            replace_text_nodes(text_nodes, suggested_value)
+            result.changes.append(f"Applied approved hyperlink text for hyperlink {link_index}.")
+
+
+def parse_review_index(review_id: str) -> int | None:
+    match = re.search(r"-(\d+)$", review_id)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def normalize_heading_style(value: str) -> str:
+    match = re.search(r"heading\s*([1-6])", value.strip(), flags=re.IGNORECASE)
+    if match:
+        return f"Heading{match.group(1)}"
+    return "Heading2"
+
+
+def apply_paragraph_style(paragraph: ET.Element, style_value: str) -> None:
+    p_pr = paragraph.find("w:pPr", NS)
+    if p_pr is None:
+        p_pr = ET.Element(f"{{{NS['w']}}}pPr")
+        paragraph.insert(0, p_pr)
+    p_style = p_pr.find("w:pStyle", NS)
+    if p_style is None:
+        p_style = ET.SubElement(p_pr, f"{{{NS['w']}}}pStyle")
+    p_style.set(f"{{{NS['w']}}}val", style_value)
+
+
+def replace_text_nodes(text_nodes: list[ET.Element], replacement: str) -> None:
+    replaced = False
+    for node in text_nodes:
+        if not replaced:
+            node.text = replacement
+            replaced = True
+        else:
+            node.text = ""
 
 
 def looks_like_heading_candidate(text: str, style_val: str) -> bool:

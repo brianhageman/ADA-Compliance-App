@@ -39,10 +39,19 @@ class handler(BaseHTTPRequestHandler):
             return
 
         body = self.rfile.read(content_length)
-        upload = parse_multipart_file(body, boundary_match.group(1).encode("utf-8"), "document")
-        if not upload:
+        form = parse_multipart_form(body, boundary_match.group(1).encode("utf-8"))
+        upload = form.get("document")
+        if not upload or "filename" not in upload:
             self.send_json({"error": "No document uploaded."}, status=HTTPStatus.BAD_REQUEST)
             return
+
+        review_items = []
+        if "reviewState" in form:
+            try:
+                review_items = json.loads(form["reviewState"].get("value", "[]"))
+            except json.JSONDecodeError:
+                self.send_json({"error": "Invalid review state payload."}, status=HTTPStatus.BAD_REQUEST)
+                return
 
         TMP_DIR.mkdir(exist_ok=True)
         suffix = Path(upload["filename"]).suffix
@@ -51,7 +60,7 @@ class handler(BaseHTTPRequestHandler):
             upload_path = Path(tmp.name)
 
         try:
-            result = process_document(upload_path, TMP_DIR)
+            result = process_document(upload_path, TMP_DIR, review_items=review_items)
             payload = result.as_dict()
             payload["filename"] = upload["filename"]
             if result.output_path:
@@ -75,8 +84,9 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
 
-def parse_multipart_file(body: bytes, boundary: bytes, field_name: str) -> dict | None:
+def parse_multipart_form(body: bytes, boundary: bytes) -> dict[str, dict]:
     marker = b"--" + boundary
+    fields: dict[str, dict] = {}
     for part in body.split(marker):
         part = part.strip()
         if not part or part == b"--":
@@ -89,16 +99,21 @@ def parse_multipart_file(body: bytes, boundary: bytes, field_name: str) -> dict 
             (line for line in headers.split("\r\n") if line.lower().startswith("content-disposition:")),
             "",
         )
-        if f'name="{field_name}"' not in disposition:
+        name_match = re.search(r'name="([^"]+)"', disposition)
+        if not name_match:
             continue
+        field_name = name_match.group(1)
         filename_match = re.search(r'filename="([^"]+)"', disposition)
-        if not filename_match:
-            return None
-        return {
-            "filename": filename_match.group(1),
-            "content": content.rstrip(b"\r\n"),
-        }
-    return None
+        if filename_match:
+            fields[field_name] = {
+                "filename": filename_match.group(1),
+                "content": content.rstrip(b"\r\n"),
+            }
+        else:
+            fields[field_name] = {
+                "value": content.rstrip(b"\r\n").decode("utf-8", errors="ignore"),
+            }
+    return fields
 
 
 def guess_mime(path: Path) -> str:
