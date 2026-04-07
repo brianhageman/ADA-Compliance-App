@@ -157,7 +157,7 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
 
         for index, doc_pr in enumerate(root.findall(".//wp:docPr", NS), start=1):
             current_descr = (doc_pr.attrib.get("descr") or "").strip()
-            if current_descr:
+            if current_descr and not should_replace_existing_alt_text(current_descr):
                 continue
             fallback_name = doc_pr.attrib.get("name") or f"image {index}"
             if index - 1 < len(media_files):
@@ -166,15 +166,16 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
                 generated = build_alt_text(fallback_name, index)
             doc_pr.set("descr", generated)
             doc_pr.set("title", generated)
+            alt_issue = "Missing alt text replaced" if not current_descr else "Generic alt text replaced"
             result.issues.append(
                 Issue(
                     severity="warning",
                     category="alt_text",
-                    message=f"Missing alt text replaced with '{generated}'.",
+                    message=f"{alt_issue} with '{generated}'.",
                     location=f"image {index}",
                 )
             )
-            result.changes.append(f"Added alt text for image {index}.")
+            result.changes.append(f"Updated alt text for image {index}.")
             result.review_items.append(
                 ReviewItem(
                     review_id=f"docx-alt-{index}",
@@ -292,7 +293,9 @@ def remediate_pptx(upload_path: Path, output_dir: Path, review_items: list[dict]
             for image_idx, props in enumerate(root.findall(".//p:cNvPr", NS), start=1):
                 name = (props.attrib.get("name") or "").lower()
                 descr = (props.attrib.get("descr") or "").strip()
-                if descr or ("picture" not in name and "image" not in name and "pic" not in name):
+                if descr and not should_replace_existing_alt_text(descr):
+                    continue
+                if "picture" not in name and "image" not in name and "pic" not in name:
                     continue
                 fallback_name = props.attrib.get("name") or f"slide {slide_idx} image {image_idx}"
                 media_file = media_files[media_index] if media_index < len(media_files) else None
@@ -304,15 +307,16 @@ def remediate_pptx(upload_path: Path, output_dir: Path, review_items: list[dict]
                 props.set("descr", generated)
                 props.set("title", generated)
                 total_updates += 1
+                alt_issue = "Missing alt text replaced" if not descr else "Generic alt text replaced"
                 result.issues.append(
                     Issue(
                         severity="warning",
                         category="alt_text",
-                        message=f"Missing alt text replaced with '{generated}'.",
+                        message=f"{alt_issue} with '{generated}'.",
                         location=f"slide {slide_idx}, image {image_idx}",
                     )
                 )
-                result.changes.append(f"Added alt text on slide {slide_idx} image {image_idx}.")
+                result.changes.append(f"Updated alt text on slide {slide_idx} image {image_idx}.")
                 result.review_items.append(
                     ReviewItem(
                         review_id=f"pptx-alt-{slide_idx}-{image_idx}",
@@ -688,6 +692,30 @@ def suggest_heading_level(visible_text: str, heading_candidates: int) -> str:
     if text.endswith(":") or word_count >= 8:
         return "Heading 3"
     return "Heading 2"
+
+
+def should_replace_existing_alt_text(value: str) -> bool:
+    normalized = normalize_alt_text(value)
+    if not normalized:
+        return True
+    generic_markers = (
+        "description automatically generated",
+        "a picture containing",
+        "image may contain",
+        "screenshot of",
+        "photo of text",
+        "clip art",
+    )
+    if any(marker in normalized for marker in generic_markers):
+        return True
+    if normalized.startswith("describe this image"):
+        return True
+    return False
+
+
+def normalize_alt_text(value: str) -> str:
+    compact = re.sub(r"\s+", " ", value.strip().lower())
+    return compact
 
 
 def build_audit_summary(result: ProcessResult) -> AuditSummary:
