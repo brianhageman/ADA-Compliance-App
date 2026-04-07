@@ -52,6 +52,8 @@ class ReviewItem:
     confidence: str = "medium"
     priority: str = "medium"
     status: str = "needs_review"
+    preview_text: str = ""
+    secondary_text: str = ""
 
 
 @dataclass
@@ -187,6 +189,8 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
                     suggested_value=generated,
                     confidence="medium",
                     priority="high",
+                    preview_text=image_review_preview(doc_pr.attrib.get("name"), current_descr),
+                    secondary_text=f"Suggested alt text: {generated}",
                 )
             )
 
@@ -218,6 +222,8 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
                     suggested_value=generated,
                     confidence="medium",
                     priority="high",
+                    preview_text=table_preview_text(rows),
+                    secondary_text=f"Suggested description: {generated}",
                 )
             )
 
@@ -252,6 +258,8 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
                     suggested_value=new_text,
                     confidence="medium",
                     priority="medium",
+                    preview_text=visible_text,
+                    secondary_text=f"Suggested link text: {new_text}",
                 )
             )
 
@@ -328,6 +336,8 @@ def remediate_pptx(upload_path: Path, output_dir: Path, review_items: list[dict]
                         suggested_value=generated,
                         confidence="medium",
                         priority="high",
+                        preview_text=image_review_preview(props.attrib.get("name"), descr),
+                        secondary_text=f"Suggested alt text: {generated}",
                     )
                 )
             audit_slide_structure(root, slide_idx, result)
@@ -428,6 +438,8 @@ def audit_docx_structure(root: ET.Element, result: ProcessResult) -> None:
                         suggested_value=suggest_heading_level(heading_prompt_text, heading_candidates),
                         confidence="medium",
                         priority="medium",
+                        preview_text=visible_text,
+                        secondary_text=(f"Bold lead-in detected: {bold_lead_text}" if bold_lead_text else ""),
                     )
                 )
 
@@ -443,6 +455,7 @@ def audit_docx_structure(root: ET.Element, result: ProcessResult) -> None:
                     suggested_value=visible_text,
                     confidence="high",
                     priority="medium",
+                    preview_text=visible_text,
                 )
             )
 
@@ -483,6 +496,7 @@ def audit_slide_structure(root: ET.Element, slide_idx: int, result: ProcessResul
                 suggested_value="Add a concise slide title.",
                 confidence="medium",
                 priority="high",
+                preview_text="This slide appears to have no visible text.",
             )
         )
         result.issues.append(
@@ -676,6 +690,24 @@ def set_table_description(table: ET.Element, description: str) -> None:
     if table_description is None:
         table_description = ET.SubElement(table_props, f"{{{NS['w']}}}tblDescription")
     table_description.set(f"{{{NS['w']}}}val", description)
+
+
+def image_review_preview(name: str | None, existing_alt_text: str | None) -> str:
+    parts = []
+    if name and name.strip():
+        parts.append(f"Source label: {name.strip()}")
+    if existing_alt_text and existing_alt_text.strip():
+        parts.append(f"Current alt text: {existing_alt_text.strip()}")
+    return "\n".join(parts)
+
+
+def table_preview_text(rows: list[list[str]]) -> str:
+    preview_lines = []
+    for row in rows[:3]:
+        cells = [cell.strip() for cell in row[:4] if cell.strip()]
+        if cells:
+            preview_lines.append(" | ".join(cells))
+    return "\n".join(preview_lines)
 
 
 def paragraph_visible_text(paragraph: ET.Element) -> str:

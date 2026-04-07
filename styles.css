@@ -81,6 +81,33 @@ h1 { max-width: 12ch; font-size: clamp(2.8rem, 6vw, 5rem); line-height: 0.94; ma
 .review-list { display: grid; gap: 0.9rem; }
 .review-card { padding: 1rem; border-radius: 18px; background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(218, 205, 189, 0.9); }
 .review-card h4 { margin-bottom: 0.4rem; }
+
+.review-prompt { margin-bottom: 0.35rem; color: var(--ink); }
+.review-location { margin: 0 0 0.75rem; font-size: 0.92rem; color: var(--muted); }
+.review-preview {
+  margin-top: 0.35rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
+  background: rgba(18, 110, 90, 0.08);
+  border: 1px solid rgba(18, 110, 90, 0.14);
+}
+.review-preview strong {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: var(--primary-strong);
+  font-size: 0.92rem;
+}
+.review-preview pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  color: var(--ink);
+}
+.review-secondary {
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+}
 .review-card textarea {
   width: 100%;
   margin-top: 0.75rem;

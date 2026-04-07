@@ -85,7 +85,31 @@ function renderReviewItems(items) {
     title.textContent = item.title;
 
     const prompt = document.createElement("p");
-    prompt.textContent = item.prompt + ' [' + item.location + ']';
+    prompt.className = "review-prompt";
+    prompt.textContent = item.prompt;
+
+    const location = document.createElement("p");
+    location.className = "review-location";
+    location.textContent = item.location;
+
+    let preview = null;
+    if (item.preview_text || item.secondary_text) {
+      preview = document.createElement("div");
+      preview.className = "review-preview";
+      if (item.preview_text) {
+        const previewLabel = document.createElement("strong");
+        previewLabel.textContent = "What you're reviewing";
+        const previewBody = document.createElement("pre");
+        previewBody.textContent = item.preview_text;
+        preview.append(previewLabel, previewBody);
+      }
+      if (item.secondary_text) {
+        const secondary = document.createElement("p");
+        secondary.className = "review-secondary";
+        secondary.textContent = item.secondary_text;
+        preview.appendChild(secondary);
+      }
+    }
 
     let editor;
     if (item.category === "heading_structure") {
@@ -146,7 +170,11 @@ function renderReviewItems(items) {
     });
 
     actions.append(approve, defer, reset);
-    card.append(meta, title, prompt, editor, actions);
+    card.append(meta, title, prompt, location);
+    if (preview) {
+      card.append(preview);
+    }
+    card.append(editor, actions);
     reviewItemsEl.append(card);
   });
 }
