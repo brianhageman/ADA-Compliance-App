@@ -367,7 +367,7 @@ def audit_docx_structure(root: ET.Element, result: ProcessResult) -> None:
                         title="Check heading structure",
                         prompt=f"This paragraph looks like a heading visually. Verify that a true heading style is applied. Paragraph text: '{visible_text}'.",
                         location=f"paragraph {index}",
-                        suggested_value="Heading 2",
+                        suggested_value=suggest_heading_level(visible_text, heading_candidates),
                         confidence="medium",
                         priority="medium",
                     )
@@ -516,6 +516,16 @@ def replace_text_nodes(text_nodes: list[ET.Element], replacement: str) -> None:
             replaced = True
         else:
             node.text = ""
+
+
+def suggest_heading_level(text: str, heading_order: int) -> str:
+    compact = text.strip()
+    word_count = len(compact.split())
+    if heading_order == 1 and word_count <= 8:
+        return "Heading 1"
+    if compact.endswith(":") or word_count > 8:
+        return "Heading 3"
+    return "Heading 2"
 
 
 def looks_like_heading_candidate(text: str, style_val: str) -> bool:
