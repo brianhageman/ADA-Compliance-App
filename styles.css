@@ -92,6 +92,16 @@ h1 { max-width: 12ch; font-size: clamp(2.8rem, 6vw, 5rem); line-height: 0.94; ma
   color: var(--ink);
   resize: vertical;
 }
+.review-select {
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.8rem;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: white;
+  font: inherit;
+  color: var(--ink);
+}
 .pill {
   display: inline-flex;
   align-items: center;

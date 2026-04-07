@@ -87,12 +87,30 @@ function renderReviewItems(items) {
     const prompt = document.createElement("p");
     prompt.textContent = item.prompt + ' [' + item.location + ']';
 
-    const textarea = document.createElement("textarea");
-    textarea.value = item.suggested_value || "";
-    textarea.rows = 3;
-    textarea.addEventListener("input", function (event) {
-      reviewState[index].suggested_value = event.target.value;
-    });
+    let editor;
+    if (item.category === "heading_structure") {
+      editor = document.createElement("select");
+      editor.className = "review-select";
+      ["Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6"].forEach(function (optionLabel) {
+        const option = document.createElement("option");
+        option.value = optionLabel;
+        option.textContent = optionLabel;
+        if ((item.suggested_value || "Heading 2") === optionLabel) {
+          option.selected = true;
+        }
+        editor.appendChild(option);
+      });
+      editor.addEventListener("change", function (event) {
+        reviewState[index].suggested_value = event.target.value;
+      });
+    } else {
+      editor = document.createElement("textarea");
+      editor.value = item.suggested_value || "";
+      editor.rows = 3;
+      editor.addEventListener("input", function (event) {
+        reviewState[index].suggested_value = event.target.value;
+      });
+    }
 
     const actions = document.createElement("div");
     actions.className = "review-actions";
@@ -128,7 +146,7 @@ function renderReviewItems(items) {
     });
 
     actions.append(approve, defer, reset);
-    card.append(meta, title, prompt, textarea, actions);
+    card.append(meta, title, prompt, editor, actions);
     reviewItemsEl.append(card);
   });
 }
