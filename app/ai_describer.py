@@ -13,13 +13,14 @@ RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gpt-4.1-mini"
 
 
-def describe_image_file(image_path: Path, *, fallback_name: str, index: int) -> str:
+def describe_image_file(image_path: Path, *, fallback_name: str, index: int, context_hint: str = "") -> str:
+    fallback = fallback_alt_text(fallback_name, index, context_hint=context_hint)
     if not image_path.exists() or not openai_configured():
-        return fallback_alt_text(fallback_name, index)
+        return fallback
 
     mime_type = mime_for_path(image_path)
     if not mime_type:
-        return fallback_alt_text(fallback_name, index)
+        return fallback
 
     image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
     prompt = (
@@ -29,6 +30,8 @@ def describe_image_file(image_path: Path, *, fallback_name: str, index: int) -> 
         "Do not use vague phrases like image, picture, or graphic unless needed for clarity. "
         "Return plain text only, ideally one sentence and under 160 characters."
     )
+    if context_hint.strip():
+        prompt += f" Nearby document context: {context_hint.strip()}"
     try:
         response = call_openai(
             {
@@ -49,9 +52,9 @@ def describe_image_file(image_path: Path, *, fallback_name: str, index: int) -> 
             }
         )
         text = extract_output_text(response)
-        return text.strip() or fallback_alt_text(fallback_name, index)
+        return text.strip() or fallback
     except Exception:
-        return fallback_alt_text(fallback_name, index)
+        return fallback
 
 
 def describe_table_rows(rows: list[list[str]], *, fallback_title: str) -> str:
@@ -131,18 +134,20 @@ def mime_for_path(path: Path) -> str | None:
     return None
 
 
-def fallback_alt_text(name: str, index: int) -> str:
+def fallback_alt_text(name: str, index: int, context_hint: str = "") -> str:
     cleaned = cleaned_asset_name(name, index)
-    if cleaned:
-        lowered = cleaned.lower()
+    context_label = cleaned_context_hint(context_hint)
+    subject = context_label or cleaned
+    if subject:
+        lowered = subject.lower()
         if any(keyword in lowered for keyword in ("chart", "graph", "plot")):
-            return f"Chart about {cleaned}. Review to confirm the key trend or comparison."
+            return f"Chart showing {subject}."
         if any(keyword in lowered for keyword in ("diagram", "cycle", "process", "model")):
-            return f"Diagram about {cleaned}. Review to confirm the main relationship or process shown."
-        if any(keyword in lowered for keyword in ("table", "data")):
-            return f"Visual related to {cleaned}. Review to confirm the key information shown."
-        return f"Visual related to {cleaned}. Review to describe the main content more specifically."
-    return "Classroom image or graphic. Review to describe the main subject and purpose."
+            return f"Diagram showing {subject}."
+        if any(keyword in lowered for keyword in ("map", "timeline", "sequence")):
+            return f"Visual showing {subject}."
+        return f"Illustration related to {subject}."
+    return "Educational illustration used in the document."
 
 
 def fallback_table_summary(rows: list[list[str]], fallback_title: str) -> str:
@@ -152,6 +157,17 @@ def fallback_table_summary(rows: list[list[str]], fallback_title: str) -> str:
     if header:
         return f"Table with {row_count} rows and {col_count} columns. Header examples: {header}."
     return f"{fallback_title}. Table with {row_count} rows and {col_count} columns."
+
+
+def cleaned_context_hint(value: str) -> str:
+    text = re.sub(r"\s+", " ", (value or "").strip())
+    if not text:
+        return ""
+    words = text.split()
+    limited = " ".join(words[:10]).strip(" .,:;-")
+    if len(limited) < 4:
+        return ""
+    return limited
 
 
 def cleaned_asset_name(name: str, index: int) -> str:
