@@ -479,6 +479,16 @@ def contrast_ratio(foreground: str, background: str) -> float | None:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+def preferred_text_color(background: str) -> tuple[str, float] | tuple[None, None]:
+    black_ratio = contrast_ratio("000000", background)
+    white_ratio = contrast_ratio("FFFFFF", background)
+    if black_ratio is None or white_ratio is None:
+        return None, None
+    if black_ratio >= white_ratio:
+        return "000000", black_ratio
+    return "FFFFFF", white_ratio
+
+
 def describe_contrast(foreground: str, background: str, ratio: float) -> str:
     return f"{foreground} on {background} is {ratio:.2f}:1"
 
@@ -515,6 +525,18 @@ def resolve_word_shading(shading_node: ET.Element | None, theme_colors: dict[str
 def word_run_foreground(run: ET.Element, theme_colors: dict[str, str]) -> str:
     color_node = run.find("./w:rPr/w:color", NS)
     return resolve_word_color_node(color_node, theme_colors)
+
+
+def set_word_run_foreground(run: ET.Element, color_value: str) -> None:
+    r_pr = run.find("w:rPr", NS)
+    if r_pr is None:
+        r_pr = ET.Element(f"{{{NS['w']}}}rPr")
+        run.insert(0, r_pr)
+    color = r_pr.find("w:color", NS)
+    if color is None:
+        color = ET.SubElement(r_pr, f"{{{NS['w']}}}color")
+    color.attrib.clear()
+    color.set(f"{{{NS['w']}}}val", color_value)
 
 
 def word_run_background(root: ET.Element, paragraph: ET.Element, run: ET.Element, theme_colors: dict[str, str]) -> str:
@@ -562,14 +584,26 @@ def shape_background_color(root: ET.Element, shape: ET.Element | None, theme_col
     return slide_background_color(root, theme_colors)
 
 
+def set_pptx_run_foreground(run: ET.Element, color_value: str) -> None:
+    r_pr = run.find("a:rPr", NS)
+    if r_pr is None:
+        r_pr = ET.Element(f"{{{NS['a']}}}rPr")
+        run.insert(0, r_pr)
+    for fill in list(r_pr.findall("a:solidFill", NS)):
+        r_pr.remove(fill)
+    solid_fill = ET.SubElement(r_pr, f"{{{NS['a']}}}solidFill")
+    ET.SubElement(solid_fill, f"{{{NS['a']}}}srgbClr", val=color_value)
+
+
 def audit_docx_contrast(root: ET.Element, result: ProcessResult, theme_colors: dict[str, str]) -> None:
-    findings = 0
+    fixes = 0
+    review_count = 0
     for index, paragraph in enumerate(root.findall(".//w:p", NS), start=1):
         visible_text = paragraph_visible_text(paragraph)
         if not visible_text:
             continue
-        worst: tuple[float, str, str, str] | None = None
-        for run in paragraph.findall("./w:r", NS):
+        auto_fixed = False
+        for run in paragraph.findall(".//w:r", NS):
             sample = run_visible_text(run).strip()
             if not sample:
                 continue
@@ -580,40 +614,53 @@ def audit_docx_contrast(root: ET.Element, result: ProcessResult, theme_colors: d
             ratio = contrast_ratio(foreground, background)
             if ratio is None or ratio >= COLOR_CONTRAST_THRESHOLD:
                 continue
-            if worst is None or ratio < worst[0]:
-                worst = (ratio, foreground, background, sample)
-        if worst is None:
-            continue
-        findings += 1
-        ratio, foreground, background, sample = worst
-        result.review_items.append(
-            ReviewItem(
-                review_id=f"docx-contrast-{index}",
-                category="color_contrast",
-                title="Check color contrast",
-                prompt="This text appears too low-contrast for normal-size body text. Adjust the text or background colors so the contrast ratio is at least 4.5:1.",
-                location=f"paragraph {index}",
-                suggested_value=f"Increase contrast. Current pair: {describe_contrast(foreground, background, ratio)}",
-                confidence="medium",
-                priority="high",
-                preview_text=visible_text,
-                secondary_text=f"Low-contrast text sample: {sample}",
-            )
-        )
-        result.issues.append(
-            Issue(
-                severity="warning",
-                category="color_contrast",
-                message=f"Paragraph {index} may fail contrast checks: {describe_contrast(foreground, background, ratio)}.",
-                location=f"paragraph {index}",
-            )
-        )
-    if findings:
-        result.changes.append(f"Flagged {findings} possible low-contrast text areas for teacher review.")
+            replacement, replacement_ratio = preferred_text_color(background)
+            if replacement and replacement_ratio and replacement_ratio >= COLOR_CONTRAST_THRESHOLD:
+                set_word_run_foreground(run, replacement)
+                fixes += 1
+                auto_fixed = True
+                result.issues.append(
+                    Issue(
+                        severity="warning",
+                        category="color_contrast",
+                        message=f"Auto-corrected low-contrast text in paragraph {index}: {describe_contrast(foreground, background, ratio)} to {describe_contrast(replacement, background, replacement_ratio)}.",
+                        location=f"paragraph {index}",
+                    )
+                )
+            else:
+                review_count += 1
+                result.review_items.append(
+                    ReviewItem(
+                        review_id=f"docx-contrast-{index}",
+                        category="color_contrast",
+                        title="Check color contrast",
+                        prompt="This text appears too low-contrast, and the app could not safely auto-correct it. Adjust the text or background colors so the contrast ratio is at least 4.5:1.",
+                        location=f"paragraph {index}",
+                        suggested_value=f"Increase contrast. Current pair: {describe_contrast(foreground, background, ratio)}",
+                        confidence="medium",
+                        priority="high",
+                        preview_text=visible_text,
+                        secondary_text=f"Low-contrast text sample: {sample}",
+                    )
+                )
+                result.issues.append(
+                    Issue(
+                        severity="warning",
+                        category="color_contrast",
+                        message=f"Paragraph {index} may fail contrast checks: {describe_contrast(foreground, background, ratio)}.",
+                        location=f"paragraph {index}",
+                    )
+                )
+                break
+        if auto_fixed:
+            result.changes.append(f"Auto-corrected low-contrast text in paragraph {index}.")
+    if review_count:
+        result.changes.append(f"Flagged {review_count} low-contrast text areas that still need teacher review.")
 
 
 def audit_pptx_contrast(root: ET.Element, slide_idx: int, result: ProcessResult, theme_colors: dict[str, str]) -> None:
-    findings = 0
+    fixes = 0
+    review_count = 0
     for run_index, run in enumerate(root.findall(".//a:r", NS), start=1):
         text_node = run.find("a:t", NS)
         sample = (text_node.text or "").strip() if text_node is not None else ""
@@ -627,32 +674,46 @@ def audit_pptx_contrast(root: ET.Element, slide_idx: int, result: ProcessResult,
         ratio = contrast_ratio(foreground, background)
         if ratio is None or ratio >= COLOR_CONTRAST_THRESHOLD:
             continue
-        findings += 1
+        replacement, replacement_ratio = preferred_text_color(background)
         location = f"slide {slide_idx}, text run {run_index}"
-        result.review_items.append(
-            ReviewItem(
-                review_id=f"pptx-contrast-{slide_idx}-{run_index}",
-                category="color_contrast",
-                title="Check slide color contrast",
-                prompt="This slide text appears too low-contrast for normal-size body text. Adjust the text or background colors so the contrast ratio is at least 4.5:1.",
-                location=location,
-                suggested_value=f"Increase contrast. Current pair: {describe_contrast(foreground, background, ratio)}",
-                confidence="medium",
-                priority="high",
-                preview_text=sample,
-                secondary_text=f"Detected on slide {slide_idx}: {describe_contrast(foreground, background, ratio)}",
+        if replacement and replacement_ratio and replacement_ratio >= COLOR_CONTRAST_THRESHOLD:
+            set_pptx_run_foreground(run, replacement)
+            fixes += 1
+            result.issues.append(
+                Issue(
+                    severity="warning",
+                    category="color_contrast",
+                    message=f"Auto-corrected low-contrast slide text on slide {slide_idx}: {describe_contrast(foreground, background, ratio)} to {describe_contrast(replacement, background, replacement_ratio)}.",
+                    location=location,
+                )
             )
-        )
-        result.issues.append(
-            Issue(
-                severity="warning",
-                category="color_contrast",
-                message=f"Slide {slide_idx} may fail contrast checks: {describe_contrast(foreground, background, ratio)}.",
-                location=location,
+            result.changes.append(f"Auto-corrected low-contrast text on slide {slide_idx}.")
+        else:
+            review_count += 1
+            result.review_items.append(
+                ReviewItem(
+                    review_id=f"pptx-contrast-{slide_idx}-{run_index}",
+                    category="color_contrast",
+                    title="Check slide color contrast",
+                    prompt="This slide text appears too low-contrast, and the app could not safely auto-correct it. Adjust the text or background colors so the contrast ratio is at least 4.5:1.",
+                    location=location,
+                    suggested_value=f"Increase contrast. Current pair: {describe_contrast(foreground, background, ratio)}",
+                    confidence="medium",
+                    priority="high",
+                    preview_text=sample,
+                    secondary_text=f"Detected on slide {slide_idx}: {describe_contrast(foreground, background, ratio)}",
+                )
             )
-        )
-    if findings:
-        result.changes.append(f"Flagged {findings} possible low-contrast text areas on slide {slide_idx} for teacher review.")
+            result.issues.append(
+                Issue(
+                    severity="warning",
+                    category="color_contrast",
+                    message=f"Slide {slide_idx} may fail contrast checks: {describe_contrast(foreground, background, ratio)}.",
+                    location=location,
+                )
+            )
+    if review_count:
+        result.changes.append(f"Flagged {review_count} low-contrast text areas on slide {slide_idx} that still need teacher review.")
 
 
 def normalize_link_text(text: str) -> str:
