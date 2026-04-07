@@ -10,6 +10,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
+from app.ai_describer import describe_image_file, describe_table_rows
+
 
 NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
@@ -91,7 +93,7 @@ def process_document(upload_path: Path, output_dir: Path, review_items: list[dic
     if ext == ".docx":
         return remediate_docx(upload_path, output_dir, review_items=review_items)
     if ext == ".pptx":
-        return remediate_pptx(upload_path, output_dir)
+        return remediate_pptx(upload_path, output_dir, review_items=review_items)
     if ext in {".pdf", ".doc", ".ppt", ".xls", ".xlsx", ".txt"}:
         return unsupported_result(upload_path, ext)
     return unsupported_result(upload_path, ext)
@@ -140,7 +142,7 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
         document_type="docx",
         filename=upload_path.name,
         limitations=[
-            "Alt text is generated from image filenames, which should be reviewed by a human.",
+            "AI-assisted image and table descriptions should still be reviewed by a human before sharing with students.",
             "Color contrast and heading structure are not fully remediated in this MVP.",
         ],
     )
@@ -148,6 +150,7 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
     try:
         unzip_to(upload_path, work_dir)
         rel_targets = load_relationship_targets(work_dir / "word" / "_rels" / "document.xml.rels")
+        media_files = sorted((work_dir / "word" / "media").glob("*"))
         document_path = work_dir / "word" / "document.xml"
         tree = ET.parse(document_path)
         root = tree.getroot()
@@ -156,7 +159,11 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
             current_descr = (doc_pr.attrib.get("descr") or "").strip()
             if current_descr:
                 continue
-            generated = build_alt_text(doc_pr.attrib.get("name"), index)
+            fallback_name = doc_pr.attrib.get("name") or f"image {index}"
+            if index - 1 < len(media_files):
+                generated = describe_image_file(media_files[index - 1], fallback_name=fallback_name, index=index)
+            else:
+                generated = build_alt_text(fallback_name, index)
             doc_pr.set("descr", generated)
             doc_pr.set("title", generated)
             result.issues.append(
@@ -176,7 +183,38 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
                     prompt="Confirm whether this image needs meaningful alt text or should be marked decorative.",
                     location=f"image {index}",
                     suggested_value=generated,
-                    confidence="low",
+                    confidence="medium",
+                    priority="high",
+                )
+            )
+
+        tables = root.findall(".//w:tbl", NS)
+        for index, table in enumerate(tables, start=1):
+            if get_table_description(table):
+                continue
+            rows = extract_table_rows(table)
+            if not rows:
+                continue
+            generated = describe_table_rows(rows, fallback_title=f"Table {index}")
+            set_table_description(table, generated)
+            result.issues.append(
+                Issue(
+                    severity="warning",
+                    category="table_text",
+                    message=f"Added table description for table {index}.",
+                    location=f"table {index}",
+                )
+            )
+            result.changes.append(f"Added accessibility description for table {index}.")
+            result.review_items.append(
+                ReviewItem(
+                    review_id=f"docx-table-{index}",
+                    category="table_text",
+                    title="Review generated table description",
+                    prompt="Confirm that this table description explains the table's subject and structure clearly for a screen reader user.",
+                    location=f"table {index}",
+                    suggested_value=generated,
+                    confidence="medium",
                     priority="high",
                 )
             )
@@ -228,13 +266,13 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-def remediate_pptx(upload_path: Path, output_dir: Path) -> ProcessResult:
+def remediate_pptx(upload_path: Path, output_dir: Path, review_items: list[dict] | None = None) -> ProcessResult:
     result = ProcessResult(
         supported=True,
         document_type="pptx",
         filename=upload_path.name,
         limitations=[
-            "This MVP remediates image alt text only for PowerPoint files.",
+            "AI-assisted image descriptions should still be reviewed by a human before distribution.",
             "Color contrast, reading order, and slide title enforcement are planned next steps.",
         ],
     )
@@ -242,21 +280,29 @@ def remediate_pptx(upload_path: Path, output_dir: Path) -> ProcessResult:
     try:
         unzip_to(upload_path, work_dir)
         slide_paths = sorted((work_dir / "ppt" / "slides").glob("slide*.xml"))
+        media_files = sorted((work_dir / "ppt" / "media").glob("*"))
         total_updates = 0
+        slide_docs: dict[int, tuple[Path, ET.ElementTree, ET.Element]] = {}
+        media_index = 0
 
         for slide_idx, slide_path in enumerate(slide_paths, start=1):
             tree = ET.parse(slide_path)
             root = tree.getroot()
-            changed = False
+            slide_docs[slide_idx] = (slide_path, tree, root)
             for image_idx, props in enumerate(root.findall(".//p:cNvPr", NS), start=1):
                 name = (props.attrib.get("name") or "").lower()
                 descr = (props.attrib.get("descr") or "").strip()
-                if descr or "picture" not in name and "image" not in name and "pic" not in name:
+                if descr or ("picture" not in name and "image" not in name and "pic" not in name):
                     continue
-                generated = build_alt_text(props.attrib.get("name"), image_idx)
+                fallback_name = props.attrib.get("name") or f"slide {slide_idx} image {image_idx}"
+                media_file = media_files[media_index] if media_index < len(media_files) else None
+                media_index += 1
+                if media_file is not None:
+                    generated = describe_image_file(media_file, fallback_name=fallback_name, index=image_idx)
+                else:
+                    generated = build_alt_text(fallback_name, image_idx)
                 props.set("descr", generated)
                 props.set("title", generated)
-                changed = True
                 total_updates += 1
                 result.issues.append(
                     Issue(
@@ -275,13 +321,16 @@ def remediate_pptx(upload_path: Path, output_dir: Path) -> ProcessResult:
                         prompt="Confirm the generated alt text or replace it with a content-specific description.",
                         location=f"slide {slide_idx}, image {image_idx}",
                         suggested_value=generated,
-                        confidence="low",
+                        confidence="medium",
                         priority="high",
                     )
                 )
             audit_slide_structure(root, slide_idx, result)
-            if changed:
-                tree.write(slide_path, encoding="utf-8", xml_declaration=True)
+
+        apply_pptx_review_actions(slide_docs, result, review_items)
+
+        for slide_path, tree, _root in slide_docs.values():
+            tree.write(slide_path, encoding="utf-8", xml_declaration=True)
 
         output_path = output_dir / f"{upload_path.stem}.ada-remediated.pptx"
         zip_from(work_dir, output_path)
@@ -448,6 +497,7 @@ def apply_docx_review_actions(root: ET.Element, result: ProcessResult, review_it
     paragraphs = root.findall(".//w:p", NS)
     doc_prs = root.findall(".//wp:docPr", NS)
     hyperlinks = root.findall(".//w:hyperlink", NS)
+    tables = root.findall(".//w:tbl", NS)
 
     for item in approved:
         review_id = item.get("review_id", "")
@@ -460,6 +510,7 @@ def apply_docx_review_actions(root: ET.Element, result: ProcessResult, review_it
             style_value = normalize_heading_style(suggested_value)
             apply_paragraph_style(paragraphs[paragraph_index - 1], style_value)
             result.changes.append(f"Applied {style_value} to paragraph {paragraph_index} from approved review.")
+            continue
 
         if review_id.startswith("docx-alt-"):
             image_index = parse_review_index(review_id)
@@ -471,6 +522,7 @@ def apply_docx_review_actions(root: ET.Element, result: ProcessResult, review_it
             doc_prs[image_index - 1].set("descr", alt_text)
             doc_prs[image_index - 1].set("title", alt_text)
             result.changes.append(f"Applied approved alt text for image {image_index}.")
+            continue
 
         if review_id.startswith("docx-link-"):
             link_index = parse_review_index(review_id)
@@ -481,6 +533,50 @@ def apply_docx_review_actions(root: ET.Element, result: ProcessResult, review_it
             text_nodes = hyperlinks[link_index - 1].findall(".//w:t", NS)
             replace_text_nodes(text_nodes, suggested_value)
             result.changes.append(f"Applied approved hyperlink text for hyperlink {link_index}.")
+            continue
+
+        if review_id.startswith("docx-table-"):
+            table_index = parse_review_index(review_id)
+            if table_index is None or table_index < 1 or table_index > len(tables):
+                continue
+            description = suggested_value or get_table_description(tables[table_index - 1])
+            if not description:
+                continue
+            set_table_description(tables[table_index - 1], description)
+            result.changes.append(f"Applied approved table description for table {table_index}.")
+
+
+def apply_pptx_review_actions(
+    slide_docs: dict[int, tuple[Path, ET.ElementTree, ET.Element]],
+    result: ProcessResult,
+    review_items: list[dict] | None,
+) -> None:
+    if not review_items:
+        return
+
+    approved = [item for item in review_items if item.get("status") == "approved"]
+    if not approved:
+        return
+
+    for item in approved:
+        review_id = item.get("review_id", "")
+        suggested_value = (item.get("suggested_value") or "").strip()
+        if not review_id.startswith("pptx-alt-") or not suggested_value:
+            continue
+        location = parse_pptx_alt_review_id(review_id)
+        if location is None:
+            continue
+        slide_idx, image_idx = location
+        slide_doc = slide_docs.get(slide_idx)
+        if slide_doc is None:
+            continue
+        _slide_path, _tree, root = slide_doc
+        shapes = root.findall(".//p:cNvPr", NS)
+        if image_idx < 1 or image_idx > len(shapes):
+            continue
+        shapes[image_idx - 1].set("descr", suggested_value)
+        shapes[image_idx - 1].set("title", suggested_value)
+        result.changes.append(f"Applied approved alt text for slide {slide_idx} image {image_idx}.")
 
 
 def parse_review_index(review_id: str) -> int | None:
@@ -488,6 +584,13 @@ def parse_review_index(review_id: str) -> int | None:
     if not match:
         return None
     return int(match.group(1))
+
+
+def parse_pptx_alt_review_id(review_id: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"pptx-alt-(\d+)-(\d+)", review_id)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 def normalize_heading_style(value: str) -> str:
@@ -518,38 +621,83 @@ def replace_text_nodes(text_nodes: list[ET.Element], replacement: str) -> None:
             node.text = ""
 
 
-def suggest_heading_level(text: str, heading_order: int) -> str:
-    compact = text.strip()
-    word_count = len(compact.split())
-    if heading_order == 1 and word_count <= 8:
+def extract_table_rows(table: ET.Element) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for row in table.findall(".//w:tr", NS):
+        cells: list[str] = []
+        for cell in row.findall("./w:tc", NS):
+            cell_text = " ".join(
+                text.strip()
+                for text in (node.text or "" for node in cell.findall(".//w:t", NS))
+                if text.strip()
+            )
+            cells.append(cell_text)
+        if any(cell.strip() for cell in cells):
+            rows.append(cells)
+    return rows
+
+
+def get_table_description(table: ET.Element) -> str:
+    table_props = table.find("w:tblPr", NS)
+    if table_props is None:
+        return ""
+    for tag in ("w:tblDescription", "w:tblCaption"):
+        node = table_props.find(tag, NS)
+        if node is not None:
+            value = (node.attrib.get(f"{{{NS['w']}}}val") or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def set_table_description(table: ET.Element, description: str) -> None:
+    table_props = table.find("w:tblPr", NS)
+    if table_props is None:
+        table_props = ET.Element(f"{{{NS['w']}}}tblPr")
+        table.insert(0, table_props)
+    caption = table_props.find("w:tblCaption", NS)
+    if caption is None:
+        caption = ET.SubElement(table_props, f"{{{NS['w']}}}tblCaption")
+    caption.set(f"{{{NS['w']}}}val", description)
+    table_description = table_props.find("w:tblDescription", NS)
+    if table_description is None:
+        table_description = ET.SubElement(table_props, f"{{{NS['w']}}}tblDescription")
+    table_description.set(f"{{{NS['w']}}}val", description)
+
+
+def looks_like_heading_candidate(visible_text: str, style_val: str) -> bool:
+    if style_val.lower().startswith("heading"):
+        return False
+    if len(visible_text) > 90:
+        return False
+    if visible_text.count(".") > 1:
+        return False
+    words = visible_text.split()
+    if len(words) > 12:
+        return False
+    uppercase_ratio = sum(1 for char in visible_text if char.isupper()) / max(len([c for c in visible_text if c.isalpha()]), 1)
+    title_case_like = visible_text == visible_text.title()
+    return uppercase_ratio > 0.3 or title_case_like or visible_text.endswith(":")
+
+
+def suggest_heading_level(visible_text: str, heading_candidates: int) -> str:
+    text = visible_text.strip()
+    word_count = len(text.split())
+    if heading_candidates == 1 and word_count <= 6 and not text.endswith(":"):
         return "Heading 1"
-    if compact.endswith(":") or word_count > 8:
+    if text.endswith(":") or word_count >= 8:
         return "Heading 3"
     return "Heading 2"
 
 
-def looks_like_heading_candidate(text: str, style_val: str) -> bool:
-    if style_val.lower().startswith("heading"):
-        return False
-    compact = text.strip()
-    if len(compact) > 80:
-        return False
-    if compact.endswith((".", "!", "?")):
-        return False
-    if compact.isupper() and len(compact.split()) <= 8:
-        return True
-    title_case_ratio = sum(1 for word in compact.split() if word[:1].isupper()) / max(len(compact.split()), 1)
-    return len(compact.split()) <= 10 and title_case_ratio > 0.7
-
-
 def build_audit_summary(result: ProcessResult) -> AuditSummary:
-    issue_penalty = min(len(result.issues) * 4, 28)
-    review_penalty = min(len(result.review_items) * 6, 42)
-    score = max(0, 100 - issue_penalty - review_penalty)
-    manual_checks = len([item for item in result.review_items if item.status == "needs_review"])
+    manual_checks = sum(1 for issue in result.issues if issue.severity == "info")
+    needs_review = len(result.review_items)
+    auto_applied = len(result.changes)
+    score = max(40, min(100, 100 - needs_review * 6 - manual_checks * 4))
     return AuditSummary(
         score=score,
-        auto_applied=len(result.changes),
-        needs_review=len(result.review_items),
+        auto_applied=auto_applied,
+        needs_review=needs_review,
         manual_checks=manual_checks,
     )

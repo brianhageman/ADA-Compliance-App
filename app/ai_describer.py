@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import base64
+import json
+import os
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+RESPONSES_URL = "https://api.openai.com/v1/responses"
+DEFAULT_MODEL = "gpt-4.1-mini"
+
+
+def describe_image_file(image_path: Path, *, fallback_name: str, index: int) -> str:
+    if not image_path.exists() or not openai_configured():
+        return fallback_alt_text(fallback_name, index)
+
+    mime_type = mime_for_path(image_path)
+    if not mime_type:
+        return fallback_alt_text(fallback_name, index)
+
+    image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    prompt = (
+        "Write concise accessibility alt text for a classroom document image. "
+        "Describe what the image actually shows, including the main subject or takeaway. "
+        "If it is a chart, diagram, or table screenshot, summarize the structure and key point. "
+        "Return plain text only, ideally one sentence and under 160 characters."
+    )
+    try:
+        response = call_openai(
+            {
+                "model": os.environ.get("OPENAI_MODEL", DEFAULT_MODEL),
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:{mime_type};base64,{image_b64}",
+                                "detail": "high",
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        text = extract_output_text(response)
+        return text.strip() or fallback_alt_text(fallback_name, index)
+    except Exception:
+        return fallback_alt_text(fallback_name, index)
+
+
+def describe_table_rows(rows: list[list[str]], *, fallback_title: str) -> str:
+    if not rows:
+        return fallback_title
+
+    if not openai_configured():
+        return fallback_table_summary(rows, fallback_title)
+
+    serialized_rows = []
+    for row in rows[:6]:
+        serialized_rows.append(" | ".join(cell.strip() for cell in row[:6] if cell.strip()))
+    prompt = (
+        "Write a concise accessibility description for a classroom document table. "
+        "Mention the table's apparent subject, structure, and the kind of information it contains. "
+        "Return plain text only, ideally one or two short sentences.\n\n"
+        + "\n".join(serialized_rows)
+    )
+    try:
+        response = call_openai(
+            {
+                "model": os.environ.get("OPENAI_MODEL", DEFAULT_MODEL),
+                "input": prompt,
+            }
+        )
+        text = extract_output_text(response)
+        return text.strip() or fallback_table_summary(rows, fallback_title)
+    except Exception:
+        return fallback_table_summary(rows, fallback_title)
+
+
+def openai_configured() -> bool:
+    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
+
+
+def call_openai(payload: dict) -> dict:
+    body = json.dumps(payload).encode("utf-8")
+    request = Request(
+        RESPONSES_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=40) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise RuntimeError(exc.read().decode("utf-8", errors="ignore") or str(exc)) from exc
+    except URLError as exc:
+        raise RuntimeError(str(exc.reason)) from exc
+
+
+def extract_output_text(response: dict) -> str:
+    if isinstance(response.get("output_text"), str):
+        return response["output_text"]
+    for item in response.get("output", []):
+        for content in item.get("content", []):
+            text = content.get("text")
+            if isinstance(text, str) and text.strip():
+                return text
+    return ""
+
+
+def mime_for_path(path: Path) -> str | None:
+    ext = path.suffix.lower()
+    if ext in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if ext == ".png":
+        return "image/png"
+    if ext == ".webp":
+        return "image/webp"
+    if ext == ".gif":
+        return "image/gif"
+    return None
+
+
+def fallback_alt_text(name: str, index: int) -> str:
+    raw_name = (name or f"image {index}").strip()
+    words = raw_name.replace("_", " ").replace("-", " ")
+    return f"Describe this image: {words}".strip()
+
+
+def fallback_table_summary(rows: list[list[str]], fallback_title: str) -> str:
+    row_count = len(rows)
+    col_count = max((len(row) for row in rows), default=0)
+    header = ", ".join(cell for cell in rows[0][:4] if cell.strip()) if rows else ""
+    if header:
+        return f"Table with {row_count} rows and {col_count} columns. Header examples: {header}."
+    return f"{fallback_title}. Table with {row_count} rows and {col_count} columns."

@@ -259,7 +259,8 @@ function downloadBlob(filename, mimeType, contentBytes) {
 
 function hasApprovedServerChanges() {
   return reviewState.some(function (item) {
-    return item.status === "approved" && item.review_id.indexOf("docx-") === 0;
+    const id = item.review_id || "";
+    return item.status === "approved" && (id.indexOf("docx-") === 0 || id.indexOf("pptx-") === 0);
   });
 }
 
