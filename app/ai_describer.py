@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -13,14 +14,31 @@ RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gpt-4.1-mini"
 
 
+@dataclass
+class ImageDescriptionResult:
+    text: str
+    debug_reason: str
+
+
 def describe_image_file(image_path: Path, *, fallback_name: str, index: int, context_hint: str = "") -> str:
+    return describe_image_result(
+        image_path,
+        fallback_name=fallback_name,
+        index=index,
+        context_hint=context_hint,
+    ).text
+
+
+def describe_image_result(image_path: Path, *, fallback_name: str, index: int, context_hint: str = "") -> ImageDescriptionResult:
     fallback = fallback_alt_text(fallback_name, index, context_hint=context_hint)
-    if not image_path.exists() or not openai_configured():
-        return fallback
+    if not image_path.exists():
+        return ImageDescriptionResult(fallback, "Fallback used: missing embedded image file")
+    if not openai_configured():
+        return ImageDescriptionResult(fallback, "Fallback used: no API key detected")
 
     mime_type = mime_for_path(image_path)
     if not mime_type:
-        return fallback
+        return ImageDescriptionResult(fallback, f"Fallback used: unsupported image type ({image_path.suffix.lower() or 'unknown'})")
 
     image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
     prompt = (
@@ -54,9 +72,10 @@ def describe_image_file(image_path: Path, *, fallback_name: str, index: int, con
             }
         )
         text = extract_output_text(response)
-        return finalize_alt_text(text, fallback, context_hint=context_hint)
-    except Exception:
-        return fallback
+        final_text, debug_reason = finalize_alt_text(text, fallback, context_hint=context_hint)
+        return ImageDescriptionResult(final_text, debug_reason)
+    except Exception as exc:
+        return ImageDescriptionResult(fallback, f"Fallback used: vision request failed ({type(exc).__name__})")
 
 
 def describe_table_rows(rows: list[list[str]], *, fallback_title: str) -> str:
@@ -112,16 +131,16 @@ def call_openai(payload: dict) -> dict:
         raise RuntimeError(str(exc.reason)) from exc
 
 
-def finalize_alt_text(text: str, fallback: str, *, context_hint: str = "") -> str:
+def finalize_alt_text(text: str, fallback: str, *, context_hint: str = "") -> tuple[str, str]:
     candidate = normalize_alt_text_response(text)
     if not candidate:
-        return fallback
+        return fallback, "Fallback used: empty AI response"
     if looks_like_generic_alt_text(candidate):
         context_label = cleaned_context_hint(context_hint)
         if context_label:
-            return fallback_alt_text("", 0, context_hint=context_label)
-        return fallback
-    return candidate
+            return fallback_alt_text("", 0, context_hint=context_label), "Fallback used: generic AI response"
+        return fallback, "Fallback used: generic AI response"
+    return candidate, "AI vision used"
 
 
 def normalize_alt_text_response(text: str) -> str:

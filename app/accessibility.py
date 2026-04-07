@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
-from app.ai_describer import describe_image_file, describe_table_rows, fallback_alt_text as generated_fallback_alt_text
+from app.ai_describer import describe_image_result, describe_table_rows, fallback_alt_text as generated_fallback_alt_text
 
 
 NS = {
@@ -163,13 +163,15 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
             if current_descr and not should_replace_existing_alt_text(current_descr):
                 continue
             fallback_name = doc_pr.attrib.get("name") or f"image {index}"
+            image_result = None
             if index - 1 < len(media_files):
-                generated = describe_image_file(
+                image_result = describe_image_result(
                     media_files[index - 1],
                     fallback_name=fallback_name,
                     index=index,
                     context_hint=docx_image_context(root, doc_pr),
                 )
+                generated = image_result.text
             else:
                 generated = build_alt_text(fallback_name, index)
             doc_pr.set("descr", generated)
@@ -195,7 +197,7 @@ def remediate_docx(upload_path: Path, output_dir: Path, review_items: list[dict]
                     confidence="medium",
                     priority="high",
                     preview_text=image_review_preview(doc_pr.attrib.get("name"), current_descr, docx_image_context(root, doc_pr)),
-                    secondary_text=f"Suggested alt text: {generated}",
+                    secondary_text=build_image_secondary_text(generated, image_result.debug_reason if image_result else "Fallback used: no extracted media match"),
                 )
             )
 
@@ -314,13 +316,15 @@ def remediate_pptx(upload_path: Path, output_dir: Path, review_items: list[dict]
                 fallback_name = props.attrib.get("name") or f"slide {slide_idx} image {image_idx}"
                 media_file = media_files[media_index] if media_index < len(media_files) else None
                 media_index += 1
+                image_result = None
                 if media_file is not None:
-                    generated = describe_image_file(
+                    image_result = describe_image_result(
                         media_file,
                         fallback_name=fallback_name,
                         index=image_idx,
                         context_hint=slide_context_hint(root),
                     )
+                    generated = image_result.text
                 else:
                     generated = build_alt_text(fallback_name, image_idx)
                 props.set("descr", generated)
@@ -347,7 +351,7 @@ def remediate_pptx(upload_path: Path, output_dir: Path, review_items: list[dict]
                         confidence="medium",
                         priority="high",
                         preview_text=image_review_preview(props.attrib.get("name"), descr, slide_context_hint(root)),
-                        secondary_text=f"Suggested alt text: {generated}",
+                        secondary_text=build_image_secondary_text(generated, image_result.debug_reason if image_result else "Fallback used: no extracted media match"),
                     )
                 )
             audit_slide_structure(root, slide_idx, result)
@@ -707,6 +711,10 @@ def image_review_preview(name: str | None, existing_alt_text: str | None, contex
     if existing_alt_text and existing_alt_text.strip():
         parts.append(f"Current alt text: {existing_alt_text.strip()}")
     return "\n".join(parts)
+
+
+def build_image_secondary_text(suggested_text: str, debug_reason: str) -> str:
+    return f"Suggested alt text: {suggested_text}\n{debug_reason}"
 
 
 def table_preview_text(rows: list[list[str]]) -> str:

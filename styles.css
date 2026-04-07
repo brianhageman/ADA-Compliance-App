@@ -107,6 +107,7 @@ h1 { max-width: 12ch; font-size: clamp(2.8rem, 6vw, 5rem); line-height: 0.94; ma
 .review-secondary {
   margin: 0.6rem 0 0;
   color: var(--muted);
+  white-space: pre-wrap;
 }
 .review-card textarea {
   width: 100%;
